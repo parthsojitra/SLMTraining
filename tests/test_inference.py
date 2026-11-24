@@ -71,15 +71,27 @@ def test_metrics_computation():
 
 
 def test_fastapi_server_endpoints():
-    client = TestClient(app)
+    # Use `with` so the lifespan context manager runs (SLM_LAZY_LOAD=true avoids model download)
+    import os
+    os.environ["SLM_LAZY_LOAD"] = "true"
 
-    # Test root endpoint
-    res_root = client.get("/")
-    assert res_root.status_code == 200
-    data = res_root.json()
-    assert data["status"] == "online"
+    with TestClient(app) as client:
+        # Test root endpoint
+        res_root = client.get("/")
+        assert res_root.status_code == 200
+        data = res_root.json()
+        assert data["status"] == "online"
 
-    # Test health endpoint
-    res_health = client.get("/health")
-    assert res_health.status_code == 200
-    assert res_health.json()["status"] == "healthy"
+        # Test liveness probe — always 200
+        res_live = client.get("/health/live")
+        assert res_live.status_code == 200
+        assert res_live.json()["status"] == "alive"
+
+        # Test legacy /health — always 200
+        res_health = client.get("/health")
+        assert res_health.status_code == 200
+        assert res_health.json()["status"] == "healthy"
+
+        # Test readiness probe — 503 when engine not loaded (lazy mode)
+        res_ready = client.get("/health/ready")
+        assert res_ready.status_code == 503

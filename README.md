@@ -364,9 +364,3 @@ Run code formatting and linting with Ruff:
 ```bash
 uv run ruff check .
 ```
-
----
-
-## 📄 License
-
-This project is licensed under the [MIT License](LICENSE).
