@@ -1,0 +1,16 @@
+# Data generation configuration for Indian SMS synthetic corpus
+dataset:
+  samples: 2500
+  val_split: 0.15
+  test_split: 0.05
+  seed: 42
+  output_dir: "./data"
+
+distribution:
+  debit_ratio: 0.50
+  credit_refund_ratio: 0.20
+  otp_ratio: 0.15
+  bill_ratio: 0.08
+  spam_promo_ratio: 0.07
+
+system_prompt: "Extract structured JSON from SMS. Output valid JSON only."

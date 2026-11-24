@@ -1,0 +1,76 @@
+[project]
+name = "slm-sms"
+version = "0.1.0"
+description = "Production-grade fine-tuning and inference system for Qwen models on Indian SMS entity extraction"
+readme = "README.md"
+requires-python = ">=3.11, <3.13"
+dependencies = [
+    "torch>=2.2.0",
+    "transformers>=4.48.0",
+    "peft>=0.13.0",
+    "trl>=0.12.0",
+    "datasets>=3.0.0",
+    "accelerate>=1.0.0",
+    "tokenizers>=0.20.0",
+    "pydantic>=2.7.0",
+    "faker>=24.0.0",
+    "pyyaml>=6.0.1",
+    "rich>=13.7.0",
+    "typer>=0.12.0",
+    "tqdm>=4.66.0",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "httpx>=0.27.0",
+    "jinja2>=3.1.0",
+]
+
+[project.optional-dependencies]
+cuda = [
+    "bitsandbytes>=0.43.0",
+]
+notebook = [
+    "jupyterlab>=4.1.0",
+    "ipywidgets>=8.1.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.0",
+]
+all = [
+    "slm-sms[notebook,dev]",
+]
+
+[project.scripts]
+slm-sms = "slm_sms.cli:app"
+slm-sms-generate = "slm_sms.cli:run_generate"
+slm-sms-train = "slm_sms.cli:run_train"
+slm-sms-evaluate = "slm_sms.cli:run_evaluate"
+slm-sms-infer = "slm_sms.cli:run_infer"
+slm-sms-serve = "slm_sms.cli:run_serve"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/slm_sms"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"*.ipynb" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
