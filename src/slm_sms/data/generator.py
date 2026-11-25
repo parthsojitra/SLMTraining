@@ -7,10 +7,14 @@ paired with structured JSON extraction labels following the Hugging Face chat te
 from __future__ import annotations
 
 import random
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 
 from slm_sms.data.schema import SMSChatMessage, SMSChatSample, SMSEntity
+from slm_sms.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class IndianSMSGenerator:
@@ -99,10 +103,34 @@ class IndianSMSGenerator:
             amt = float(round(amt))
         return amt
 
+    def _format_indian(self, amt: float) -> str:
+        """Format a number using the Indian numbering system (lakh/crore grouping).
+
+        Indian grouping: rightmost group is 3 digits, then groups of 2.
+        Examples:
+            1450.00     → "1,450.00"
+            12450.00    → "12,450.00"
+            145000.00   → "1,45,000.00"    (one lakh forty-five thousand)
+            1450000.00  → "14,50,000.00"   (fourteen lakh fifty thousand)
+            10000000.00 → "1,00,00,000.00" (one crore)
+        """
+        int_part, dec_part = f"{amt:.2f}".split(".")
+        # First group: last 3 digits
+        if len(int_part) <= 3:
+            return f"{int_part}.{dec_part}"
+        result = int_part[-3:]
+        int_part = int_part[:-3]
+        # Subsequent groups: 2 digits each
+        while len(int_part) > 2:
+            result = int_part[-2:] + "," + result
+            int_part = int_part[:-2]
+        if int_part:
+            result = int_part + "," + result
+        return f"{result}.{dec_part}"
+
     def _format_amt(self, amt: float, curr_sym: str) -> str:
-        # Indian number formatting with commas (e.g. 1,450.00 or 1,25,000.00)
-        s = f"{amt:,.2f}"
-        return f"{curr_sym}{s}"
+        """Format an amount with currency symbol using Indian lakh/crore grouping."""
+        return f"{curr_sym}{self._format_indian(amt)}"
 
     def _rand_account(self) -> str:
         return f"{self.rng.randint(1000, 9999)}"
@@ -453,21 +481,68 @@ class IndianSMSGenerator:
         n_samples: int = 1000,
         val_split: float = 0.15,
         test_split: float = 0.05,
+        min_class_fraction: float = 0.02,
     ) -> dict[str, list[dict[str, Any]]]:
-        """Generate train, val, and test splits."""
-        all_samples = [self.generate_chat_sample().model_dump() for _ in range(n_samples)]
+        """Generate train, val, and test splits with class distribution reporting.
+
+        Parameters
+        ----------
+        n_samples:
+            Total number of samples to generate.
+        val_split:
+            Fraction of samples for the validation set.
+        test_split:
+            Fraction of samples for the test set.
+        min_class_fraction:
+            Minimum fraction of ``n_samples`` required per SMS type (default 2 %).
+            Raises ``ValueError`` if any class falls below this threshold, guarding
+            against severe imbalance.  Pass ``0.0`` to disable the check.
+        """
+        # P6 #27 — track (sms_text, entity) pairs before converting to chat format
+        raw_pairs: list[tuple[Any, SMSEntity]] = [
+            self.generate_single_sample() for _ in range(n_samples)
+        ]
+
+        # Class distribution report
+        type_counts: Counter[str] = Counter(entity.type for _, entity in raw_pairs)
+        logger.info(
+            "Dataset class distribution",
+            extra={
+                "n_samples": n_samples,
+                "distribution": dict(type_counts),
+            },
+        )
+
+        # Guard: fail fast if any class is severely underrepresented
+        min_required = max(1, int(n_samples * min_class_fraction))
+        for sms_type, count in type_counts.items():
+            if count < min_required:
+                raise ValueError(
+                    f"Class '{sms_type}' has only {count} samples "
+                    f"({count / n_samples:.1%} of {n_samples}), below the "
+                    f"{min_class_fraction:.1%} floor ({min_required} samples). "
+                    "Increase n_samples or adjust the generation distribution."
+                )
+
+        # Convert to chat format
+        all_samples = [
+            SMSChatSample(
+                messages=[
+                    SMSChatMessage(role="system", content=self.SYSTEM_PROMPT),
+                    SMSChatMessage(role="user", content=sms_text),
+                    SMSChatMessage(role="assistant", content=entity.to_compact_json()),
+                ]
+            ).model_dump()
+            for sms_text, entity in raw_pairs
+        ]
         self.rng.shuffle(all_samples)
 
         n_test = int(n_samples * test_split)
         n_val = int(n_samples * val_split)
         n_train = n_samples - n_val - n_test
 
-        train_data = all_samples[:n_train]
-        val_data = all_samples[n_train : n_train + n_val]
-        test_data = all_samples[n_train + n_val :]
-
         return {
-            "train": train_data,
-            "validation": val_data,
-            "test": test_data,
+            "train": all_samples[:n_train],
+            "validation": all_samples[n_train : n_train + n_val],
+            "test": all_samples[n_train + n_val :],
         }

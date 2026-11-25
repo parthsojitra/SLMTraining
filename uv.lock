@@ -2945,6 +2945,9 @@ requires-dist = [
 ]
 provides-extras = ["cuda", "notebook", "dev", "all"]
 
+[package.metadata.requires-dev]
+dev = []
+
 [[package]]
 name = "soupsieve"
 version = "2.10"
