@@ -28,6 +28,15 @@ file (auto-loaded via python-dotenv when present).
     SLM_MAX_NEW_TOKENS      — max tokens the model may generate per request
     SLM_TEMPERATURE         — sampling temperature (0 = greedy)
     SLM_TOP_P               — nucleus sampling p
+    SLM_ENVIRONMENT         — deployment environment (development/staging/production)
+    SLM_OTEL_ENABLED        — enable OpenTelemetry instrumentation (true/false)
+    SLM_OTEL_SERVICE_NAME   — OpenTelemetry service.name (or OTEL_SERVICE_NAME)
+    SLM_OTEL_EXPORTER       — exporter mode: otlp | console | none
+    OTEL_EXPORTER_OTLP_ENDPOINT — OTLP collector base URL (e.g. http://localhost:4318)
+    OTEL_EXPORTER_OTLP_PROTOCOL — http/protobuf | grpc
+    SLM_OTEL_TRACE_SAMPLE_RATE — trace sampling ratio (0.0 to 1.0)
+    SLM_OTEL_METRIC_EXPORT_INTERVAL_MS — periodic metric export interval (ms)
+    SLM_OTEL_EXCLUDED_URLS  — comma-separated regex URLs excluded from HTTP spans
 """
 
 from __future__ import annotations
@@ -123,12 +132,58 @@ class Settings:
         return None  # auto
 
     # ------------------------------------------------------------------
+    # Observability / OpenTelemetry
+    # ------------------------------------------------------------------
+    @property
+    def environment(self) -> str:
+        return os.getenv("SLM_ENVIRONMENT") or os.getenv("DEPLOYMENT_ENVIRONMENT", "development")
+
+    @property
+    def otel_enabled(self) -> bool:
+        return os.getenv("SLM_OTEL_ENABLED", "true").lower() in ("true", "1", "yes")
+
+    @property
+    def otel_service_name(self) -> str:
+        return os.getenv("OTEL_SERVICE_NAME") or os.getenv("SLM_OTEL_SERVICE_NAME", "slm-sms")
+
+    @property
+    def otel_otlp_endpoint(self) -> str | None:
+        return os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT") or None
+
+    @property
+    def otel_otlp_protocol(self) -> str:
+        return os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf").strip().lower()
+
+    @property
+    def otel_exporter(self) -> str:
+        """Exporter mode: 'otlp', 'console', or 'none'."""
+        explicit = os.getenv("SLM_OTEL_EXPORTER", "").strip().lower()
+        if explicit:
+            return explicit
+        # Auto-select 'otlp' whenever an OTLP endpoint is configured
+        return "otlp" if self.otel_otlp_endpoint else "none"
+
+    @property
+    def otel_trace_sample_rate(self) -> float:
+        rate = float(os.getenv("SLM_OTEL_TRACE_SAMPLE_RATE", "1.0"))
+        return max(0.0, min(1.0, rate))
+
+    @property
+    def otel_metric_export_interval_ms(self) -> int:
+        return int(os.getenv("SLM_OTEL_METRIC_EXPORT_INTERVAL_MS", "15000"))
+
+    @property
+    def otel_excluded_urls(self) -> str:
+        return os.getenv("SLM_OTEL_EXCLUDED_URLS", "/health,/health/live,/health/ready")
+
+    # ------------------------------------------------------------------
     # Convenience repr
     # ------------------------------------------------------------------
     def __repr__(self) -> str:
         return (
             f"Settings(model_id={self.model_id!r}, revision={self.model_revision!r}, "
-            f"lazy_load={self.lazy_load}, log_level={self.log_level!r})"
+            f"lazy_load={self.lazy_load}, log_level={self.log_level!r}, "
+            f"otel_exporter={self.otel_exporter!r})"
         )
 
 

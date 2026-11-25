@@ -63,3 +63,7 @@ access_log_format = (
 # Process naming
 # ---------------------------------------------------------------------------
 proc_name = "slm-sms-api"
+
+# Note: OpenTelemetry providers (BatchSpanProcessor / PeriodicExportingMetricReader)
+# are initialized inside FastAPI's post-fork worker lifecycle (`create_app` / `lifespan`)
+# rather than at pre-fork import time, avoiding broken background threads if `workers > 1`.

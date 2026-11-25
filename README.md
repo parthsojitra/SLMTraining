@@ -24,6 +24,7 @@ Includes **both** an interactive **Jupyter Notebook** and a production-ready **P
 - [Interactive Jupyter Notebook](#-interactive-jupyter-notebook)
 - [Single SMS CLI Inference](#-single-sms-cli-inference)
 - [Production Serving with FastAPI & Gunicorn](#-production-serving-with-fastapi--gunicorn)
+- [Observability (OpenTelemetry)](#-observability-opentelemetry)
 - [LoRA Weight Merging & Export](#-lora-weight-merging--export)
 - [Testing, Coverage, Linting & Load Testing](#-testing-coverage-linting--load-testing)
 
@@ -76,8 +77,12 @@ flowchart TD
   - Split Kubernetes probes (`/health/live` vs `/health/ready`) and graceful shutdown draining (`SLM_DRAIN_SECONDS`).
   - Centralized JSON logging (`slm_sms.logging_config`) and `X-Request-ID` middleware across all requests.
   - Ready-to-run `gunicorn.conf.py` using `UvicornWorker`.
+- **Observability with OpenTelemetry**:
+  - End-to-end distributed tracing (FastAPI ASGI -> `ThreadPoolExecutor` context propagation -> `SMSExtractorEngine` / `SMSTrainingPipeline`) with W3C `traceparent`/`baggage` propagation and `X-Trace-ID` response headers.
+  - Domain & GenAI OTel metrics (`slm.inference.requests`, `slm.inference.duration`, `slm.inference.batch_size`, `slm.inference.tokens.input`, `slm.inference.tokens.output`, `slm.inference.fallback.total`, `slm.engine.ready`) exported via OTLP (HTTP/protobuf or gRPC) or Console.
+  - Centralized JSON logging (`slm_sms.logging_config`) with automatic `trace_id` / `span_id` / `trace_flags` correlation and strict PII exclusion from telemetry attributes.
 - **Quality & Load Testing**:
-  - 34 unit + HTTP integration tests with `pytest-cov` (`--cov-fail-under=60`), Ruff linting/formatting, and a `tests/locustfile.py` load test suite.
+  - Unit, HTTP integration, and OpenTelemetry tests with `pytest-cov` (`--cov-fail-under=60`), Ruff linting/formatting, and a `tests/locustfile.py` load test suite.
 
 ---
 
@@ -97,8 +102,9 @@ SLMTraining/
 ├── src/
 │   └── slm_sms/
 │       ├── __init__.py
-│       ├── config.py                     # Centralized Settings singleton (reads SLM_* env vars / .env)
-│       ├── logging_config.py             # Centralized JSON/text logging configuration
+│       ├── config.py                     # Centralized Settings singleton (reads SLM_* / OTEL_* env vars)
+│       ├── logging_config.py             # Centralized JSON/text logging with OTel trace correlation
+│       ├── telemetry.py                  # OpenTelemetry tracing, metrics, OTLP export, & FastAPI setup
 │       ├── cli.py                        # Typer CLI (`slm-sms` and subcommand entry points)
 │       ├── data/
 │       │   ├── schema.py                 # Pydantic SMSEntity, TransactionType, & SMSChatSample models
@@ -124,6 +130,7 @@ SLMTraining/
 │   ├── test_generator.py                 # Generator splits, Indian number formatting, RNG & balance tests
 │   ├── test_inference.py                 # Regex fallback, metrics, and health endpoint tests
 │   ├── test_server_integration.py        # End-to-end FastAPI validation, probes, & request-ID tests
+│   ├── test_telemetry.py                 # OpenTelemetry trace, metric, PII, & log-correlation tests
 │   ├── test_trainer.py                   # SFTTrainer setup test
 │   └── locustfile.py                     # Locust load testing suite
 ├── notebooks/
@@ -196,6 +203,15 @@ cp .env.example .env
 | `SLM_DRAIN_SECONDS` | `10` | Seconds to drain in-flight requests during lifespan shutdown |
 | `SLM_LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `SLM_LOG_JSON` | *auto* | Force JSON (`true`) or plain text (`false`); auto-detects non-TTY |
+| `SLM_ENVIRONMENT` | `development` | OpenTelemetry `deployment.environment.name` resource attribute |
+| `SLM_OTEL_ENABLED` | `true` | Enable OpenTelemetry instrumentation (`true`/`false`) |
+| `OTEL_SERVICE_NAME` | `slm-sms` | OpenTelemetry `service.name` resource attribute |
+| `SLM_OTEL_EXPORTER` | *auto* (`otlp` / `none`) | Exporter backend: `otlp`, `console`, or `none` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *unset* | Collector base URL (e.g., `http://localhost:4318` or `http://localhost:4317`) |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | OTLP transport protocol: `http/protobuf` or `grpc` |
+| `SLM_OTEL_TRACE_SAMPLE_RATE` | `1.0` | Head-based trace sampling ratio (`0.0`–`1.0`) |
+| `SLM_OTEL_METRIC_EXPORT_INTERVAL_MS` | `15000` | Periodic metric reader export interval in milliseconds |
+| `SLM_OTEL_EXCLUDED_URLS` | `/health,/health/live,/health/ready` | Comma-separated URL patterns excluded from HTTP server spans |
 | `GUNICORN_WORKERS` | `1` | Gunicorn worker processes (keep at `1` per GPU) |
 | `GUNICORN_PORT` | `8000` | Gunicorn bind port |
 | `GUNICORN_TIMEOUT` | `120` | Gunicorn worker timeout in seconds |
@@ -349,7 +365,41 @@ uv run python scripts/serve.py --reload
 | `POST` | `/api/v1/extract/batch` | Native GPU-batched extraction (`texts`: 1–50 strings, each 1–480 chars) |
 | `GET` | `/docs` | Interactive OpenAPI / Swagger UI |
 
-All responses include an `X-Request-ID` header (echoes an incoming `X-Request-ID` or generates a UUID4).
+All responses include `X-Request-ID` (echoes incoming `X-Request-ID` or generates a UUID4) and `X-Trace-ID` (active W3C OpenTelemetry trace ID when tracing is enabled).
+
+---
+
+## 📡 Observability (OpenTelemetry)
+
+Observability is implemented in [`src/slm_sms/telemetry.py`](src/slm_sms/telemetry.py) across all three pillars:
+
+1. **Distributed Tracing**:
+   - FastAPI HTTP instrumentation (`FastAPIInstrumentor`) honors incoming W3C `traceparent` / `tracestate` headers, excludes `/health*` probe polling and ASGI micro-spans, and injects `http.request_id`.
+   - `run_in_executor_with_context()` propagates OTel context across `ThreadPoolExecutor` boundaries into `SMSExtractorEngine` child spans (`slm.engine.extract`, `slm.llm.generate`, `slm.entity.parse`, `slm.fallback.regex`, `slm.engine.extract_batch`).
+   - Training runs emit `slm.training.run`, `slm.training.init_model`, `slm.training.sft`, and `slm.training.eval` spans.
+   - **PII Safe**: Raw SMS bodies and extracted OTPs/account numbers are never attached to spans or metrics.
+2. **Metrics** (exported via OTLP with custom latency buckets):
+   - `slm.inference.requests` (`Counter`: `operation`, `mode`, `status`, `entity_type`)
+   - `slm.inference.duration` (`Histogram`, ms)
+   - `slm.inference.batch_size` (`Histogram`)
+   - `slm.inference.tokens.input` / `slm.inference.tokens.output` (`Counter`)
+   - `slm.inference.fallback.total` (`Counter`: `reason`)
+   - `slm.engine.ready` (`UpDownCounter`: `1` ready / `0` unloaded)
+3. **Correlated JSON Logs**:
+   - Every log line from `_JsonFormatter` automatically includes `trace_id`, `span_id`, and `trace_flags` when emitted inside an active span.
+
+### Quick Local Collector Example (Jaeger / OTLP)
+```bash
+# Run Jaeger all-in-one with OTLP enabled (UI at http://localhost:16686)
+docker run --rm -p 16686:16686 -p 4317:4317 -p 4318:4318 jaegertracing/all-in-one:latest
+
+# Start the API exporting traces & metrics over OTLP HTTP
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+uv run python scripts/serve.py --port 8000
+```
+
+For quick local debugging without a collector, set `SLM_OTEL_EXPORTER=console`.
 
 ### Example Requests
 
@@ -416,7 +466,7 @@ uv run python scripts/export_merged_model.py \
 `pytest` is configured in [`pyproject.toml`](pyproject.toml) to measure coverage on `src/slm_sms` (`--cov-fail-under=60`) and write an HTML report to `htmlcov/index.html`:
 
 ```bash
-# Run all 34 unit & FastAPI integration tests (exclude Locust load script)
+# Run unit, FastAPI integration, and OpenTelemetry tests (exclude Locust load script)
 uv run python -m pytest tests/ --ignore=tests/locustfile.py -v
 ```
 

@@ -23,7 +23,7 @@ from typing import Any
 
 
 class _JsonFormatter(logging.Formatter):
-    """Minimal JSON log formatter — no extra dependencies required."""
+    """Minimal JSON log formatter with automatic OpenTelemetry trace correlation."""
 
     def format(self, record: logging.LogRecord) -> str:  # noqa: A003
         import json
@@ -34,6 +34,19 @@ class _JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+
+        # Inject active OpenTelemetry trace/span IDs for log-to-trace correlation
+        try:
+            from opentelemetry import trace
+
+            span = trace.get_current_span()
+            span_ctx = span.get_span_context() if span is not None else None
+            if span_ctx is not None and span_ctx.is_valid:
+                payload["trace_id"] = format(span_ctx.trace_id, "032x")
+                payload["span_id"] = format(span_ctx.span_id, "016x")
+                payload["trace_flags"] = f"{int(span_ctx.trace_flags):02x}"
+        except Exception:
+            pass
 
         # Structured extra fields attached with logger.info("msg", extra={...})
         _STANDARD_ATTRS = {

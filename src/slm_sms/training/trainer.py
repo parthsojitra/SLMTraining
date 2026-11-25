@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +13,7 @@ from peft import PeftModel
 from transformers import PreTrainedTokenizer
 from trl import SFTConfig, SFTTrainer
 
+from slm_sms.logging_config import get_logger
 from slm_sms.models.model_loader import (
     get_device_and_dtype,
     get_lora_config,
@@ -21,8 +21,9 @@ from slm_sms.models.model_loader import (
     load_tokenizer,
     setup_peft_model,
 )
+from slm_sms.telemetry import get_tracer
 
-logger = logging.getLogger("slm_sms.trainer")
+logger = get_logger(__name__)
 
 
 class SMSTrainingPipeline:
@@ -55,18 +56,24 @@ class SMSTrainingPipeline:
 
     def initialize_model_and_tokenizer(self) -> None:
         """Load tokenizer, base model, and apply LoRA."""
-        logger.info(f"Initializing model {self.model_id}...")
-        self.tokenizer = load_tokenizer(self.model_id)
-        base_model = load_model(
-            model_id=self.model_id,
-            use_4bit=self.use_4bit,
-            use_8bit=self.use_8bit,
-        )
-        self.model = setup_peft_model(
-            base_model,
-            lora_config=self.lora_config,
-            is_quantized=self.use_4bit or self.use_8bit,
-        )
+        tracer = get_tracer(__name__)
+        with tracer.start_as_current_span("slm.training.init_model") as span:
+            span.set_attribute("slm.model.id", self.model_id)
+            span.set_attribute("slm.quantized.4bit", self.use_4bit)
+            span.set_attribute("slm.quantized.8bit", self.use_8bit)
+
+            logger.info("Initializing training model", extra={"model_id": self.model_id})
+            self.tokenizer = load_tokenizer(self.model_id)
+            base_model = load_model(
+                model_id=self.model_id,
+                use_4bit=self.use_4bit,
+                use_8bit=self.use_8bit,
+            )
+            self.model = setup_peft_model(
+                base_model,
+                lora_config=self.lora_config,
+                is_quantized=self.use_4bit or self.use_8bit,
+            )
 
     def train(
         self,
@@ -102,124 +109,147 @@ class SMSTrainingPipeline:
         Returns:
             Dict containing final train and evaluation metrics.
         """
-        if self.model is None or self.tokenizer is None:
-            self.initialize_model_and_tokenizer()
+        tracer = get_tracer(__name__)
+        with tracer.start_as_current_span("slm.training.run") as run_span:
+            run_span.set_attribute("slm.model.id", self.model_id)
+            run_span.set_attribute("slm.training.epochs", num_train_epochs)
+            run_span.set_attribute("slm.training.batch_size", per_device_train_batch_size)
+            run_span.set_attribute("slm.training.learning_rate", learning_rate)
 
-        # Resolve train and evaluation datasets
-        if isinstance(dataset, (DatasetDict, dict)):
-            if "train" not in dataset:
-                raise ValueError("Dataset dictionary must contain a 'train' split.")
-            train_dataset = dataset["train"]
-            eval_dataset = (
-                dataset.get("validation", None)
-                or dataset.get("val", None)
-                or dataset.get("eval", None)
+            if self.model is None or self.tokenizer is None:
+                self.initialize_model_and_tokenizer()
+
+            # Resolve train and evaluation datasets
+            if isinstance(dataset, (DatasetDict, dict)):
+                if "train" not in dataset:
+                    raise ValueError("Dataset dictionary must contain a 'train' split.")
+                train_dataset = dataset["train"]
+                eval_dataset = (
+                    dataset.get("validation", None)
+                    or dataset.get("val", None)
+                    or dataset.get("eval", None)
+                )
+            else:
+                train_dataset = dataset
+                eval_dataset = None
+
+            _, _, dev_name = get_device_and_dtype()
+            run_span.set_attribute("slm.device", dev_name)
+
+            # Device & precision resolution
+            if dev_name == "cuda":
+                use_cpu = False
+                bf16 = torch.cuda.is_bf16_supported()
+                fp16 = not bf16
+            else:
+                # For CPU or Apple Silicon MPS, avoid unsupported bf16/gpu flags in TrainingArguments
+                use_cpu = dev_name == "cpu"
+                bf16 = False
+                fp16 = False
+
+            # Configure evaluation and checkpointing strategies
+            has_eval = eval_dataset is not None and eval_steps is not None and eval_steps > 0
+            eval_strategy = "steps" if has_eval else "no"
+
+            # Build SFTConfig kwargs dynamically to support various transformers/trl versions
+            sft_fields = {f.name for f in dataclasses.fields(SFTConfig)}
+
+            config_kwargs: dict[str, Any] = {
+                "output_dir": str(self.output_dir),
+                "num_train_epochs": num_train_epochs,
+                "per_device_train_batch_size": per_device_train_batch_size,
+                "gradient_accumulation_steps": gradient_accumulation_steps,
+                "learning_rate": learning_rate,
+                "warmup_ratio": warmup_ratio,
+                "logging_steps": logging_steps,
+                "save_total_limit": save_total_limit,
+                "use_cpu": use_cpu,
+                "fp16": fp16,
+                "bf16": bf16,
+                "report_to": "none",
+                "optim": "adamw_torch",
+                "gradient_checkpointing": gradient_checkpointing,
+            }
+
+            # Sequence length kwarg (max_length in modern TRL, max_seq_length in legacy)
+            if "max_length" in sft_fields:
+                config_kwargs["max_length"] = max_length
+            elif "max_seq_length" in sft_fields:
+                config_kwargs["max_seq_length"] = max_length
+
+            # Evaluation & saving strategy kwarg
+            if "eval_strategy" in sft_fields:
+                config_kwargs["eval_strategy"] = eval_strategy
+            elif "evaluation_strategy" in sft_fields:
+                config_kwargs["evaluation_strategy"] = eval_strategy
+
+            if has_eval:
+                config_kwargs["eval_steps"] = eval_steps
+                config_kwargs["save_strategy"] = "steps"
+                config_kwargs["save_steps"] = eval_steps
+                config_kwargs["load_best_model_at_end"] = load_best_model_at_end
+                if load_best_model_at_end:
+                    config_kwargs["metric_for_best_model"] = "loss"
+            else:
+                config_kwargs["save_strategy"] = "epoch"
+                config_kwargs["load_best_model_at_end"] = False
+
+            sft_config = SFTConfig(**config_kwargs)
+
+            logger.info(
+                "Configured SFT Trainer",
+                extra={
+                    "device": dev_name,
+                    "use_cpu": use_cpu,
+                    "fp16": fp16,
+                    "bf16": bf16,
+                    "eval_strategy": eval_strategy,
+                },
             )
-        else:
-            train_dataset = dataset
-            eval_dataset = None
 
-        _, _, dev_name = get_device_and_dtype()
+            # SFTTrainer argument compatibility (processing_class in modern TRL vs tokenizer in older)
+            trainer_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "train_dataset": train_dataset,
+                "eval_dataset": eval_dataset,
+                "args": sft_config,
+            }
 
-        # Device & precision resolution
-        if dev_name == "cuda":
-            use_cpu = False
-            bf16 = torch.cuda.is_bf16_supported()
-            fp16 = not bf16
-        else:
-            # For CPU or Apple Silicon MPS, avoid unsupported bf16/gpu flags in TrainingArguments
-            use_cpu = dev_name == "cpu"
-            bf16 = False
-            fp16 = False
+            sft_init_params = inspect.signature(SFTTrainer.__init__).parameters
+            if "processing_class" in sft_init_params:
+                trainer_kwargs["processing_class"] = self.tokenizer
+            elif "tokenizer" in sft_init_params:
+                trainer_kwargs["tokenizer"] = self.tokenizer
 
-        # Configure evaluation and checkpointing strategies
-        has_eval = eval_dataset is not None and eval_steps is not None and eval_steps > 0
-        eval_strategy = "steps" if has_eval else "no"
+            trainer = SFTTrainer(**trainer_kwargs)
 
-        # Build SFTConfig kwargs dynamically to support various transformers/trl versions
-        sft_fields = {f.name for f in dataclasses.fields(SFTConfig)}
+            logger.info("Starting fine-tuning")
+            with tracer.start_as_current_span("slm.training.sft") as sft_span:
+                train_result = trainer.train()
+                for k, v in train_result.metrics.items():
+                    if isinstance(v, (int, float)):
+                        sft_span.set_attribute(f"slm.train.{k}", v)
 
-        config_kwargs: dict[str, Any] = {
-            "output_dir": str(self.output_dir),
-            "num_train_epochs": num_train_epochs,
-            "per_device_train_batch_size": per_device_train_batch_size,
-            "gradient_accumulation_steps": gradient_accumulation_steps,
-            "learning_rate": learning_rate,
-            "warmup_ratio": warmup_ratio,
-            "logging_steps": logging_steps,
-            "save_total_limit": save_total_limit,
-            "use_cpu": use_cpu,
-            "fp16": fp16,
-            "bf16": bf16,
-            "report_to": "none",
-            "optim": "adamw_torch",
-            "gradient_checkpointing": gradient_checkpointing,
-        }
+            # Save the fine-tuned LoRA adapter and tokenizer
+            logger.info("Saving fine-tuned adapter", extra={"output_dir": str(self.output_dir)})
+            trainer.save_model(str(self.output_dir))
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(str(self.output_dir))
 
-        # Sequence length kwarg (max_length in modern TRL, max_seq_length in legacy)
-        if "max_length" in sft_fields:
-            config_kwargs["max_length"] = max_length
-        elif "max_seq_length" in sft_fields:
-            config_kwargs["max_seq_length"] = max_length
+            metrics = dict(train_result.metrics)
+            trainer.log_metrics("train", metrics)
+            trainer.save_metrics("train", metrics)
+            trainer.save_state()
 
-        # Evaluation & saving strategy kwarg
-        if "eval_strategy" in sft_fields:
-            config_kwargs["eval_strategy"] = eval_strategy
-        elif "evaluation_strategy" in sft_fields:
-            config_kwargs["evaluation_strategy"] = eval_strategy
+            if eval_dataset is not None:
+                logger.info("Running final evaluation on validation set")
+                with tracer.start_as_current_span("slm.training.eval") as eval_span:
+                    eval_metrics = trainer.evaluate()
+                    for k, v in eval_metrics.items():
+                        if isinstance(v, (int, float)):
+                            eval_span.set_attribute(f"slm.eval.{k}", v)
+                trainer.log_metrics("eval", eval_metrics)
+                trainer.save_metrics("eval", eval_metrics)
+                metrics.update(eval_metrics)
 
-        if has_eval:
-            config_kwargs["eval_steps"] = eval_steps
-            config_kwargs["save_strategy"] = "steps"
-            config_kwargs["save_steps"] = eval_steps
-            config_kwargs["load_best_model_at_end"] = load_best_model_at_end
-            if load_best_model_at_end:
-                config_kwargs["metric_for_best_model"] = "loss"
-        else:
-            config_kwargs["save_strategy"] = "epoch"
-            config_kwargs["load_best_model_at_end"] = False
-
-        sft_config = SFTConfig(**config_kwargs)
-
-        logger.info(
-            f"Configured SFT Trainer on {dev_name} (use_cpu={use_cpu}, fp16={fp16}, bf16={bf16}, eval_strategy={eval_strategy})."
-        )
-
-        # SFTTrainer argument compatibility (processing_class in modern TRL vs tokenizer in older)
-        trainer_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "train_dataset": train_dataset,
-            "eval_dataset": eval_dataset,
-            "args": sft_config,
-        }
-
-        sft_init_params = inspect.signature(SFTTrainer.__init__).parameters
-        if "processing_class" in sft_init_params:
-            trainer_kwargs["processing_class"] = self.tokenizer
-        elif "tokenizer" in sft_init_params:
-            trainer_kwargs["tokenizer"] = self.tokenizer
-
-        trainer = SFTTrainer(**trainer_kwargs)
-
-        logger.info("Starting fine-tuning...")
-        train_result = trainer.train()
-
-        # Save the fine-tuned LoRA adapter and tokenizer
-        logger.info(f"Saving fine-tuned adapter to {self.output_dir}...")
-        trainer.save_model(str(self.output_dir))
-        if self.tokenizer is not None:
-            self.tokenizer.save_pretrained(str(self.output_dir))
-
-        metrics = dict(train_result.metrics)
-        trainer.log_metrics("train", metrics)
-        trainer.save_metrics("train", metrics)
-        trainer.save_state()
-
-        if eval_dataset is not None:
-            logger.info("Running final evaluation on validation set...")
-            eval_metrics = trainer.evaluate()
-            trainer.log_metrics("eval", eval_metrics)
-            trainer.save_metrics("eval", eval_metrics)
-            metrics.update(eval_metrics)
-
-        return metrics
+            return metrics
