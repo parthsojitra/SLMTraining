@@ -481,9 +481,14 @@ uv run python scripts/export_merged_model.py \
 ```bash
 # Run unit & FastAPI integration tests (tests/load/ is automatically excluded)
 uv run python -m pytest -v
-# Or split by tier:
+
+# Or use Makefile shortcuts (run `make help` for all targets):
 make test-unit
 make test-integration
+make lint
+make generate-data SAMPLES=2500
+make train-model
+make evaluate
 ```
 
 ### Linting & Formatting (Ruff)

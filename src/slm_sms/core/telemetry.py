@@ -17,7 +17,6 @@ Provides:
 from __future__ import annotations
 
 import asyncio
-import atexit
 import contextvars
 import functools
 from collections.abc import Callable
@@ -422,6 +421,3 @@ def shutdown_telemetry() -> None:
     _state.instruments = None
     _state._engine_ready_state = 0
     _state.configured = False
-
-
-atexit.register(shutdown_telemetry)
