@@ -20,14 +20,22 @@ def main():
     parser.add_argument(
         "--output_dir", type=str, default="./output/qwen-sms-lora", help="Output directory"
     )
-    parser.add_argument("--epochs", type=int, default=3, help="Training epochs")
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
-    parser.add_argument("--grad_accum", type=int, default=4, help="Gradient accumulation steps")
+    parser.add_argument("--epochs", type=int, default=1, help="Training epochs")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
+    parser.add_argument("--grad_accum", type=int, default=16, help="Gradient accumulation steps")
     parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
+    parser.add_argument("--max_length", type=int, default=256, help="Max sequence length")
     parser.add_argument("--lora_r", type=int, default=16, help="LoRA rank")
     parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA alpha")
     parser.add_argument("--use_4bit", action="store_true", help="Use 4-bit QLoRA (CUDA)")
     args = parser.parse_args()
+
+    eval_batch_size = None
+    warmup_ratio = 0.05
+    logging_steps = 10
+    eval_steps = 50
+    save_total_limit = 2
+    gradient_checkpointing = None
 
     if args.config:
         raw_cfg = load_yaml_config(args.config)
@@ -41,8 +49,15 @@ def main():
         args.output_dir = str(t_cfg.get("output_dir", args.output_dir))
         args.epochs = int(t_cfg.get("num_train_epochs", args.epochs))
         args.batch_size = int(t_cfg.get("per_device_train_batch_size", args.batch_size))
+        eval_batch_size = t_cfg.get("per_device_eval_batch_size")
         args.grad_accum = int(t_cfg.get("gradient_accumulation_steps", args.grad_accum))
         args.lr = float(t_cfg.get("learning_rate", args.lr))
+        args.max_length = int(t_cfg.get("max_length", args.max_length))
+        warmup_ratio = float(t_cfg.get("warmup_ratio", warmup_ratio))
+        logging_steps = int(t_cfg.get("logging_steps", logging_steps))
+        eval_steps = t_cfg.get("eval_steps", eval_steps)
+        save_total_limit = int(t_cfg.get("save_total_limit", save_total_limit))
+        gradient_checkpointing = t_cfg.get("gradient_checkpointing")
 
     print(f"Loading dataset from {args.data_dir}...")
     dataset = load_hf_dataset_from_dir(args.data_dir)
@@ -61,8 +76,15 @@ def main():
         dataset=dataset,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=eval_batch_size,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
+        max_length=args.max_length,
+        warmup_ratio=warmup_ratio,
+        logging_steps=logging_steps,
+        eval_steps=eval_steps,
+        save_total_limit=save_total_limit,
+        gradient_checkpointing=gradient_checkpointing,
     )
     print(f"Training finished successfully! Metrics: {metrics}")
 

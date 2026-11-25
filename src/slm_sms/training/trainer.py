@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import gc
 import inspect
 from pathlib import Path
 from typing import Any
@@ -79,15 +80,16 @@ class SMSTrainingPipeline:
         self,
         dataset: DatasetDict | Dataset | dict[str, Any],
         num_train_epochs: int = 3,
-        per_device_train_batch_size: int = 4,
-        gradient_accumulation_steps: int = 4,
+        per_device_train_batch_size: int = 1,
+        per_device_eval_batch_size: int | None = None,
+        gradient_accumulation_steps: int = 16,
         learning_rate: float = 2e-4,
-        max_length: int = 512,
+        max_length: int = 256,
         warmup_ratio: float = 0.05,
         logging_steps: int = 10,
         eval_steps: int | None = 50,
         save_total_limit: int = 2,
-        gradient_checkpointing: bool = False,
+        gradient_checkpointing: bool | None = None,
         load_best_model_at_end: bool = False,
     ) -> dict[str, Any]:
         """Execute SFT training loop on the dataset.
@@ -95,7 +97,8 @@ class SMSTrainingPipeline:
         Args:
             dataset: DatasetDict or Dataset containing 'train' (and optional 'validation').
             num_train_epochs: Number of training epochs.
-            per_device_train_batch_size: Batch size per worker device.
+            per_device_train_batch_size: Training batch size per worker device.
+            per_device_eval_batch_size: Eval batch size (defaults to train batch size to avoid OOM).
             gradient_accumulation_steps: Gradient accumulation step count.
             learning_rate: Optimizer initial learning rate.
             max_length: Maximum sequence token length.
@@ -103,7 +106,7 @@ class SMSTrainingPipeline:
             logging_steps: Logging cadence in steps.
             eval_steps: Evaluation cadence in steps (if validation dataset present).
             save_total_limit: Maximum checkpoints retained.
-            gradient_checkpointing: Whether to enable activation checkpointing.
+            gradient_checkpointing: Enable activation checkpointing (None = auto-enable on GPU/MPS).
             load_best_model_at_end: Load best checkpoint upon completion.
 
         Returns:
@@ -115,6 +118,13 @@ class SMSTrainingPipeline:
             run_span.set_attribute("slm.training.epochs", num_train_epochs)
             run_span.set_attribute("slm.training.batch_size", per_device_train_batch_size)
             run_span.set_attribute("slm.training.learning_rate", learning_rate)
+
+            # Reclaim any lingering tensors on unified/GPU memory before loading or training
+            gc.collect()
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            elif torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             if self.model is None or self.tokenizer is None:
                 self.initialize_model_and_tokenizer()
@@ -147,6 +157,20 @@ class SMSTrainingPipeline:
                 bf16 = False
                 fp16 = False
 
+            # Auto-enable activation checkpointing on GPU/MPS to keep 2B model inside 20 GB memory
+            effective_grad_ckpt = (
+                dev_name in ("mps", "cuda")
+                if gradient_checkpointing is None
+                else gradient_checkpointing
+            )
+            eval_batch_size = per_device_eval_batch_size or per_device_train_batch_size
+
+            if effective_grad_ckpt and self.model is not None:
+                if hasattr(self.model, "config") and hasattr(self.model.config, "use_cache"):
+                    self.model.config.use_cache = False
+                if hasattr(self.model, "enable_input_require_grads"):
+                    self.model.enable_input_require_grads()
+
             # Configure evaluation and checkpointing strategies
             has_eval = eval_dataset is not None and eval_steps is not None and eval_steps > 0
             eval_strategy = "steps" if has_eval else "no"
@@ -158,9 +182,9 @@ class SMSTrainingPipeline:
                 "output_dir": str(self.output_dir),
                 "num_train_epochs": num_train_epochs,
                 "per_device_train_batch_size": per_device_train_batch_size,
+                "per_device_eval_batch_size": eval_batch_size,
                 "gradient_accumulation_steps": gradient_accumulation_steps,
                 "learning_rate": learning_rate,
-                "warmup_ratio": warmup_ratio,
                 "logging_steps": logging_steps,
                 "save_total_limit": save_total_limit,
                 "use_cpu": use_cpu,
@@ -168,8 +192,29 @@ class SMSTrainingPipeline:
                 "bf16": bf16,
                 "report_to": "none",
                 "optim": "adamw_torch",
-                "gradient_checkpointing": gradient_checkpointing,
             }
+
+            if "prediction_loss_only" in sft_fields:
+                config_kwargs["prediction_loss_only"] = True
+
+            if dev_name == "mps" and "torch_empty_cache_steps" in sft_fields:
+                config_kwargs["torch_empty_cache_steps"] = 10
+
+            # Gradient/activation checkpointing compatibility (renamed in transformers v5)
+            if "activation_checkpointing" in sft_fields:
+                config_kwargs["activation_checkpointing"] = effective_grad_ckpt
+                if effective_grad_ckpt and "activation_checkpointing_kwargs" in sft_fields:
+                    config_kwargs["activation_checkpointing_kwargs"] = {"use_reentrant": False}
+            elif "gradient_checkpointing" in sft_fields:
+                config_kwargs["gradient_checkpointing"] = effective_grad_ckpt
+                if effective_grad_ckpt and "gradient_checkpointing_kwargs" in sft_fields:
+                    config_kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
+
+            # Warmup compatibility (warmup_ratio removed in transformers v5 in favor of float warmup_steps)
+            if "warmup_ratio" in sft_fields:
+                config_kwargs["warmup_ratio"] = warmup_ratio
+            elif "warmup_steps" in sft_fields:
+                config_kwargs["warmup_steps"] = warmup_ratio
 
             # Sequence length kwarg (max_length in modern TRL, max_seq_length in legacy)
             if "max_length" in sft_fields:

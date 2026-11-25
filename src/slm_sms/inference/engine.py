@@ -88,6 +88,7 @@ class SMSExtractorEngine:
                     self.model_id_or_path,
                     torch_dtype=self.dtype,
                     trust_remote_code=True,
+                    low_cpu_mem_usage=True,
                     revision=self.model_revision,
                 )
 

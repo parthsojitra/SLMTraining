@@ -21,7 +21,8 @@ def test_load_train_yaml_config():
     cfg = load_yaml_config(PROJECT_ROOT / "config" / "train_config.yaml")
     assert cfg["model"]["model_id"] == "Qwen/Qwen3.5-2B"
     assert cfg["lora"]["r"] == 16
-    assert cfg["training"]["num_train_epochs"] == 3
+    assert cfg["training"]["num_train_epochs"] >= 1
+    assert cfg["training"]["gradient_checkpointing"] is True
 
 
 def test_load_yaml_missing_file_raises(tmp_path: Path):

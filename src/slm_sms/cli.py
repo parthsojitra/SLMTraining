@@ -82,9 +82,9 @@ def train_cli(
     output_dir: Path = typer.Option(
         Path("./output/qwen-sms-lora"), "--output-dir", "-o", help="Adapter save directory"
     ),
-    epochs: int = typer.Option(3, "--epochs", "-e", help="Number of training epochs"),
-    batch_size: int = typer.Option(4, "--batch-size", "-b", help="Per-device train batch size"),
-    grad_accum: int = typer.Option(4, "--grad-accum", help="Gradient accumulation steps"),
+    epochs: int = typer.Option(1, "--epochs", "-e", help="Number of training epochs"),
+    batch_size: int = typer.Option(1, "--batch-size", "-b", help="Per-device train batch size"),
+    grad_accum: int = typer.Option(16, "--grad-accum", help="Gradient accumulation steps"),
     learning_rate: float = typer.Option(2e-4, "--learning-rate", "--lr", help="Learning rate"),
     lora_r: int = typer.Option(16, "--lora-r", help="LoRA rank dimension"),
     use_4bit: bool = typer.Option(False, "--4bit", help="Enable 4-bit QLoRA (requires CUDA)"),
@@ -95,11 +95,13 @@ def train_cli(
 
     lora_alpha = 32
     lora_dropout = 0.05
-    max_length = 512
+    max_length = 256
     warmup_ratio = 0.05
     logging_steps = 10
     eval_steps = 50
     save_total_limit = 2
+    eval_batch_size: int | None = None
+    gradient_checkpointing: bool | None = None
 
     if config is not None:
         raw_cfg = load_yaml_config(config)
@@ -114,10 +116,12 @@ def train_cli(
         output_dir = Path(t_cfg.get("output_dir", output_dir))
         epochs = int(t_cfg.get("num_train_epochs", epochs))
         batch_size = int(t_cfg.get("per_device_train_batch_size", batch_size))
+        eval_batch_size = t_cfg.get("per_device_eval_batch_size")
         grad_accum = int(t_cfg.get("gradient_accumulation_steps", grad_accum))
         learning_rate = float(t_cfg.get("learning_rate", learning_rate))
         max_length = int(t_cfg.get("max_length", max_length))
         warmup_ratio = float(t_cfg.get("warmup_ratio", warmup_ratio))
+        gradient_checkpointing = t_cfg.get("gradient_checkpointing")
         logging_steps = int(t_cfg.get("logging_steps", logging_steps))
         eval_steps = t_cfg.get("eval_steps", eval_steps)
         save_total_limit = int(t_cfg.get("save_total_limit", save_total_limit))
@@ -138,6 +142,7 @@ def train_cli(
         dataset=dataset,
         num_train_epochs=epochs,
         per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=eval_batch_size,
         gradient_accumulation_steps=grad_accum,
         learning_rate=learning_rate,
         max_length=max_length,
@@ -145,6 +150,7 @@ def train_cli(
         logging_steps=logging_steps,
         eval_steps=eval_steps,
         save_total_limit=save_total_limit,
+        gradient_checkpointing=gradient_checkpointing,
     )
     console.print(f"[bold green]Training complete! Metrics: {metrics}[/bold green]")
 

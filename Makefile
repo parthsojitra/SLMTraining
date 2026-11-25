@@ -70,8 +70,8 @@ infer: ## Extract entities from single SMS (override SMS="..." ADAPTER_PATH=...)
 export-model: ## Merge trained LoRA adapter into standalone Hugging Face weights
 	$(PYTHON) scripts/export_merged_model.py --base_model $(MODEL_ID) --adapter_path $(OUTPUT_DIR) --output_dir $(MERGED_DIR)
 
-notebook: ## Launch interactive JupyterLab training & exploration notebook
-	$(UV) run jupyter lab notebooks/qwen_sms_fine_tuning.ipynb
+notebook-run: ## Launch interactive JupyterLab training & exploration notebook
+	$(UV) run --extra notebook --extra dev jupyter lab notebooks/qwen_sms_fine_tuning.ipynb
 
 # ---------------------------------------------------------------------------
 # Serving & Load Testing
@@ -90,10 +90,10 @@ serve-prod: ## Start production Gunicorn + UvicornWorker server (gunicorn.conf.p
 	$(UV) run gunicorn slm_sms.inference.server:app -c gunicorn.conf.py
 
 load-test: ## Open Locust web UI at http://localhost:8089
-	$(UV) run locust -f tests/load/locustfile.py --host http://localhost:$(PORT)
+	$(UV) run --extra dev --extra notebook locust -f tests/load/locustfile.py --host http://localhost:$(PORT)
 
 load-test-headless: ## Run 60s headless Locust load benchmark (50 users)
-	$(UV) run locust -f tests/load/locustfile.py --host http://localhost:$(PORT) --users 50 --spawn-rate 10 --run-time 60s --headless
+	$(UV) run --extra dev --extra notebook locust -f tests/load/locustfile.py --host http://localhost:$(PORT) --users 50 --spawn-rate 10 --run-time 60s --headless
 
 # ---------------------------------------------------------------------------
 # Testing, Quality & Cleanup

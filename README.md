@@ -327,7 +327,9 @@ uv run python scripts/evaluate.py --test_file ./data/test.jsonl --adapter_path .
 Launch the end-to-end notebook mirroring the production pipeline (YAML config loading, synthetic generation, LoRA setup, `SMSTrainingPipeline`, `compute_extraction_metrics`, `SMSExtractorEngine` single/batch inference, and FastAPI + OpenTelemetry trace verification):
 
 ```bash
-uv run jupyter lab notebooks/qwen_sms_fine_tuning.ipynb
+uv run --extra notebook --extra dev jupyter lab notebooks/qwen_sms_fine_tuning.ipynb
+# Or via Makefile:
+make notebook
 ```
 
 ---
@@ -480,7 +482,7 @@ uv run python scripts/export_merged_model.py \
 
 ```bash
 # Run unit & FastAPI integration tests (tests/load/ is automatically excluded)
-uv run python -m pytest -v
+uv run --extra dev pytest -v
 
 # Or use Makefile shortcuts (run `make help` for all targets):
 make test-unit
@@ -493,8 +495,8 @@ make evaluate
 
 ### Linting & Formatting (Ruff)
 ```bash
-uv run python -m ruff check src/ scripts/ tests/
-uv run python -m ruff format --check src/ scripts/ tests/
+uv run --extra dev ruff check src/ scripts/ tests/
+uv run --extra dev ruff format --check src/ scripts/ tests/
 ```
 
 ### Load Testing (Locust)
@@ -505,9 +507,9 @@ uv run python -m ruff format --check src/ scripts/ tests/
 uv run python scripts/serve.py --port 8000
 
 # Terminal 2: launch Locust UI at http://localhost:8089
-uv run locust -f tests/load/locustfile.py --host http://localhost:8000
+uv run --extra dev locust -f tests/load/locustfile.py --host http://localhost:8000
 
 # Or run headless load test
-uv run locust -f tests/load/locustfile.py --host http://localhost:8000 \
+uv run --extra dev locust -f tests/load/locustfile.py --host http://localhost:8000 \
   --users 50 --spawn-rate 10 --run-time 60s --headless
 ```
