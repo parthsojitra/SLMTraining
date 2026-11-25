@@ -9,7 +9,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from slm_sms.config import settings  # P4 #17 — single source of truth for model ID
+from slm_sms.core.config import load_yaml_config, settings
 
 app = typer.Typer(help="SLM SMS: Indian SMS Entity Extraction & Fine-Tuning CLI")
 console = Console()
@@ -17,6 +17,9 @@ console = Console()
 
 @app.command("generate")
 def generate_cli(
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Optional YAML config (e.g. config/generation_config.yaml)"
+    ),
     samples: int = typer.Option(
         2000, "--samples", "-n", help="Total number of samples to generate"
     ),
@@ -30,6 +33,14 @@ def generate_cli(
     """Generate high-fidelity synthetic Indian SMS dataset."""
     from slm_sms.data.dataset import save_jsonl
     from slm_sms.data.generator import IndianSMSGenerator
+
+    if config is not None:
+        ds_cfg = load_yaml_config(config).get("dataset", {})
+        samples = int(ds_cfg.get("samples", samples))
+        output_dir = Path(ds_cfg.get("output_dir", output_dir))
+        val_split = float(ds_cfg.get("val_split", val_split))
+        test_split = float(ds_cfg.get("test_split", test_split))
+        seed = int(ds_cfg.get("seed", seed))
 
     console.print(f"[bold green]Generating {samples} Indian SMS samples...[/bold green]")
     generator = IndianSMSGenerator(seed=seed)
@@ -59,6 +70,9 @@ def generate_cli(
 
 @app.command("train")
 def train_cli(
+    config: Path | None = typer.Option(
+        None, "--config", "-c", help="Optional YAML config (e.g. config/train_config.yaml)"
+    ),
     model_id: str = typer.Option(
         settings.model_id, "--model-id", "-m", help="Hugging Face Model ID"
     ),
@@ -79,6 +93,35 @@ def train_cli(
     from slm_sms.data.dataset import load_hf_dataset_from_dir
     from slm_sms.training.trainer import SMSTrainingPipeline
 
+    lora_alpha = 32
+    lora_dropout = 0.05
+    max_length = 512
+    warmup_ratio = 0.05
+    logging_steps = 10
+    eval_steps = 50
+    save_total_limit = 2
+
+    if config is not None:
+        raw_cfg = load_yaml_config(config)
+        m_cfg = raw_cfg.get("model", {})
+        l_cfg = raw_cfg.get("lora", {})
+        t_cfg = raw_cfg.get("training", {})
+        model_id = str(m_cfg.get("model_id", model_id))
+        use_4bit = bool(m_cfg.get("use_4bit", use_4bit))
+        lora_r = int(l_cfg.get("r", lora_r))
+        lora_alpha = int(l_cfg.get("lora_alpha", lora_alpha))
+        lora_dropout = float(l_cfg.get("lora_dropout", lora_dropout))
+        output_dir = Path(t_cfg.get("output_dir", output_dir))
+        epochs = int(t_cfg.get("num_train_epochs", epochs))
+        batch_size = int(t_cfg.get("per_device_train_batch_size", batch_size))
+        grad_accum = int(t_cfg.get("gradient_accumulation_steps", grad_accum))
+        learning_rate = float(t_cfg.get("learning_rate", learning_rate))
+        max_length = int(t_cfg.get("max_length", max_length))
+        warmup_ratio = float(t_cfg.get("warmup_ratio", warmup_ratio))
+        logging_steps = int(t_cfg.get("logging_steps", logging_steps))
+        eval_steps = t_cfg.get("eval_steps", eval_steps)
+        save_total_limit = int(t_cfg.get("save_total_limit", save_total_limit))
+
     console.print(f"[bold blue]Starting Fine-Tuning Pipeline for {model_id}[/bold blue]")
     dataset = load_hf_dataset_from_dir(data_dir)
 
@@ -86,6 +129,8 @@ def train_cli(
         model_id=model_id,
         output_dir=output_dir,
         lora_r=lora_r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
         use_4bit=use_4bit,
     )
 
@@ -95,6 +140,11 @@ def train_cli(
         per_device_train_batch_size=batch_size,
         gradient_accumulation_steps=grad_accum,
         learning_rate=learning_rate,
+        max_length=max_length,
+        warmup_ratio=warmup_ratio,
+        logging_steps=logging_steps,
+        eval_steps=eval_steps,
+        save_total_limit=save_total_limit,
     )
     console.print(f"[bold green]Training complete! Metrics: {metrics}[/bold green]")
 

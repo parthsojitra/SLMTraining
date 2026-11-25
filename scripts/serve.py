@@ -21,7 +21,7 @@ except ImportError:
 
 import uvicorn
 
-from slm_sms.logging_config import configure_logging, get_logger
+from slm_sms.core.logging import configure_logging, get_logger
 
 configure_logging()
 logger = get_logger(__name__)

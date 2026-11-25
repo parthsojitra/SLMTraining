@@ -11,8 +11,8 @@ from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 
+from slm_sms.core.logging import get_logger
 from slm_sms.data.schema import SMSChatMessage, SMSChatSample, SMSEntity
-from slm_sms.logging_config import get_logger
 
 logger = get_logger(__name__)
 

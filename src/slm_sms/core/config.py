@@ -6,7 +6,7 @@ magic strings scattered across files.
 
 Usage
 -----
-    from slm_sms.config import settings
+    from slm_sms.core.config import load_yaml_config, settings
 
     engine = SMSExtractorEngine(model_id_or_path=settings.model_id, ...)
 
@@ -42,6 +42,10 @@ file (auto-loaded via python-dotenv when present).
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from typing import Any
+
+import yaml
 
 # Optional: load .env for local development (python-dotenv)
 try:
@@ -56,7 +60,7 @@ class Settings:
     """Application-wide configuration derived from environment variables.
 
     Instantiated once at import time via ``settings`` singleton; prefer
-    ``from slm_sms.config import settings`` rather than constructing a new
+    ``from slm_sms.core.config import settings`` rather than constructing a new
     instance.
     """
 
@@ -191,3 +195,15 @@ class Settings:
 # Public singleton — import this everywhere
 # ---------------------------------------------------------------------------
 settings = Settings()
+
+
+def load_yaml_config(config_path: str | Path) -> dict[str, Any]:
+    """Load a YAML configuration file (e.g., config/train_config.yaml)."""
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected top-level mapping in YAML config: {path}")
+    return data

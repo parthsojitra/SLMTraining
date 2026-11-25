@@ -49,8 +49,8 @@ from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from slm_sms import __version__
-from slm_sms.config import settings
-from slm_sms.logging_config import get_logger
+from slm_sms.core.config import settings
+from slm_sms.core.logging import get_logger
 
 logger = get_logger(__name__)
 

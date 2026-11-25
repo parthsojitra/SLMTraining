@@ -6,7 +6,7 @@ Import and call ``configure_logging()`` once at application startup (in
 ``lifespan``, ``cli.py`` entry-points, or the top of any script).  Every
 module that needs a logger should do::
 
-    from slm_sms.logging_config import get_logger
+    from slm_sms.core.logging import get_logger
     logger = get_logger(__name__)
 
 The logger name is preserved so log records are still filterable by module,

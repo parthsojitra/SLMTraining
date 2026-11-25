@@ -12,10 +12,10 @@ Usage
 
 2. Run Locust:
        # Interactive web UI (http://localhost:8089)
-       uv run locust -f tests/locustfile.py --host http://localhost:8000
+       uv run locust -f tests/load/locustfile.py --host http://localhost:8000
 
        # Headless CI mode (100 users, 10 spawn/sec, 60 s duration)
-       uv run locust -f tests/locustfile.py --host http://localhost:8000 \\
+       uv run locust -f tests/load/locustfile.py --host http://localhost:8000 \\
            --users 100 --spawn-rate 10 --run-time 60s --headless \\
            --csv results/load_test
 

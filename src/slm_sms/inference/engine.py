@@ -12,11 +12,11 @@ from opentelemetry.trace import Status, StatusCode
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 
-from slm_sms.config import settings
+from slm_sms.core.config import settings
+from slm_sms.core.logging import get_logger
+from slm_sms.core.telemetry import get_metrics, get_tracer
 from slm_sms.data.schema import SMSEntity
-from slm_sms.logging_config import get_logger
 from slm_sms.models.model_loader import get_device_and_dtype
-from slm_sms.telemetry import get_metrics, get_tracer
 
 logger = get_logger(__name__)
 

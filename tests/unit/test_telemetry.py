@@ -11,9 +11,9 @@ from opentelemetry import trace
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from slm_sms.core.logging import _JsonFormatter
+from slm_sms.core.telemetry import configure_telemetry, get_tracer, shutdown_telemetry
 from slm_sms.inference.engine import SMSExtractorEngine
-from slm_sms.logging_config import _JsonFormatter
-from slm_sms.telemetry import configure_telemetry, get_tracer, shutdown_telemetry
 
 
 def _collect_metric_points(reader: InMemoryMetricReader) -> dict[str, list]:

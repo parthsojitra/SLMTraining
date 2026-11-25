@@ -14,16 +14,16 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, Field, field_validator
 
-from slm_sms.config import settings
-from slm_sms.inference.engine import SMSExtractorEngine
-from slm_sms.logging_config import configure_logging, get_logger
-from slm_sms.telemetry import (
+from slm_sms.core.config import settings
+from slm_sms.core.logging import configure_logging, get_logger
+from slm_sms.core.telemetry import (
     configure_telemetry,
     flush_telemetry,
     instrument_fastapi_app,
     record_engine_ready,
     run_in_executor_with_context,
 )
+from slm_sms.inference.engine import SMSExtractorEngine
 
 # ---------------------------------------------------------------------------
 # Logging — configure before anything else so all submodules pick it up

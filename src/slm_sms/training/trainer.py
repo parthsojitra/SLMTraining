@@ -13,7 +13,8 @@ from peft import PeftModel
 from transformers import PreTrainedTokenizer
 from trl import SFTConfig, SFTTrainer
 
-from slm_sms.logging_config import get_logger
+from slm_sms.core.logging import get_logger
+from slm_sms.core.telemetry import get_tracer
 from slm_sms.models.model_loader import (
     get_device_and_dtype,
     get_lora_config,
@@ -21,7 +22,6 @@ from slm_sms.models.model_loader import (
     load_tokenizer,
     setup_peft_model,
 )
-from slm_sms.telemetry import get_tracer
 
 logger = get_logger(__name__)
 

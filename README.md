@@ -75,14 +75,14 @@ flowchart TD
   - Non-blocking inference offloaded to a configurable `ThreadPoolExecutor` (`SLM_INFERENCE_THREADS`).
   - Strict Pydantic input limits (`1–480` characters per SMS; `1–50` items per batch request).
   - Split Kubernetes probes (`/health/live` vs `/health/ready`) and graceful shutdown draining (`SLM_DRAIN_SECONDS`).
-  - Centralized JSON logging (`slm_sms.logging_config`) and `X-Request-ID` middleware across all requests.
+  - Centralized JSON logging (`slm_sms.core.logging`) and `X-Request-ID` middleware across all requests.
   - Ready-to-run `gunicorn.conf.py` using `UvicornWorker`.
 - **Observability with OpenTelemetry**:
   - End-to-end distributed tracing (FastAPI ASGI -> `ThreadPoolExecutor` context propagation -> `SMSExtractorEngine` / `SMSTrainingPipeline`) with W3C `traceparent`/`baggage` propagation and `X-Trace-ID` response headers.
   - Domain & GenAI OTel metrics (`slm.inference.requests`, `slm.inference.duration`, `slm.inference.batch_size`, `slm.inference.tokens.input`, `slm.inference.tokens.output`, `slm.inference.fallback.total`, `slm.engine.ready`) exported via OTLP (HTTP/protobuf or gRPC) or Console.
-  - Centralized JSON logging (`slm_sms.logging_config`) with automatic `trace_id` / `span_id` / `trace_flags` correlation and strict PII exclusion from telemetry attributes.
+  - Centralized JSON logging (`slm_sms.core.logging`) with automatic `trace_id` / `span_id` / `trace_flags` correlation and strict PII exclusion from telemetry attributes.
 - **Quality & Load Testing**:
-  - Unit, HTTP integration, and OpenTelemetry tests with `pytest-cov` (`--cov-fail-under=60`), Ruff linting/formatting, and a `tests/locustfile.py` load test suite.
+  - Tiered unit, HTTP integration, and OpenTelemetry tests (`tests/unit/`, `tests/integration/`) with `pytest-cov` (`--cov-fail-under=60`), Ruff linting/formatting, and `tests/load/locustfile.py`.
 
 ---
 
@@ -92,6 +92,7 @@ flowchart TD
 SLMTraining/
 ├── pyproject.toml                        # UV project definition, scripts, Ruff, Pytest & Coverage config
 ├── uv.lock                               # Locked dependency graph
+├── Makefile                              # Common dev/test/lint/serve/load-test tasks
 ├── gunicorn.conf.py                      # Production Gunicorn + UvicornWorker configuration
 ├── .env.example                          # Documented environment variable template
 ├── .gitignore                            # Ignores .venv, .env, output/, models/, .coverage, htmlcov/
@@ -102,20 +103,27 @@ SLMTraining/
 ├── src/
 │   └── slm_sms/
 │       ├── __init__.py
-│       ├── config.py                     # Centralized Settings singleton (reads SLM_* / OTEL_* env vars)
-│       ├── logging_config.py             # Centralized JSON/text logging with OTel trace correlation
-│       ├── telemetry.py                  # OpenTelemetry tracing, metrics, OTLP export, & FastAPI setup
+│       ├── py.typed                      # PEP 561 typed package marker
 │       ├── cli.py                        # Typer CLI (`slm-sms` and subcommand entry points)
+│       ├── core/                         # Cross-cutting infrastructure
+│       │   ├── __init__.py
+│       │   ├── config.py                 # Centralized Settings singleton & YAML config loader
+│       │   ├── logging.py                # Centralized JSON/text logging with OTel trace correlation
+│       │   └── telemetry.py              # OpenTelemetry tracing, metrics, OTLP export, & FastAPI setup
 │       ├── data/
+│       │   ├── __init__.py
 │       │   ├── schema.py                 # Pydantic SMSEntity, TransactionType, & SMSChatSample models
 │       │   ├── generator.py              # Thread-safe Indian SMS synthetic data generator
 │       │   └── dataset.py                # JSONL I/O & Hugging Face DatasetDict loader
 │       ├── models/
+│       │   ├── __init__.py
 │       │   └── model_loader.py           # Device detection, revision-pinned HF loaders, PEFT LoRA setup
 │       ├── training/
+│       │   ├── __init__.py
 │       │   ├── trainer.py                # TRL SFTTrainer pipeline (CUDA/MPS/CPU precision aware)
 │       │   └── metrics.py                # ExtractionMetricsReport (JSON validity, field accuracy, spam F1)
 │       └── inference/
+│           ├── __init__.py
 │           ├── engine.py                 # SMSExtractorEngine (single, batched GPU, regex fallback)
 │           └── server.py                 # FastAPI microservice with probes, validation, & request IDs
 ├── scripts/
@@ -126,13 +134,18 @@ SLMTraining/
 │   ├── serve.py                          # Uvicorn server runner (loads .env)
 │   └── export_merged_model.py            # Merges LoRA weights into base model for vLLM / Ollama
 ├── tests/
-│   ├── test_schema.py                    # Schema cleaning & JSON markdown extraction tests
-│   ├── test_generator.py                 # Generator splits, Indian number formatting, RNG & balance tests
-│   ├── test_inference.py                 # Regex fallback, metrics, and health endpoint tests
-│   ├── test_server_integration.py        # End-to-end FastAPI validation, probes, & request-ID tests
-│   ├── test_telemetry.py                 # OpenTelemetry trace, metric, PII, & log-correlation tests
-│   ├── test_trainer.py                   # SFTTrainer setup test
-│   └── locustfile.py                     # Locust load testing suite
+│   ├── conftest.py                       # Shared offline-safe pytest fixtures
+│   ├── unit/
+│   │   ├── test_config.py                # Settings & YAML config loading tests
+│   │   ├── test_schema.py                # Schema cleaning & JSON markdown extraction tests
+│   │   ├── test_generator.py             # Generator splits, Indian number formatting, RNG & balance tests
+│   │   ├── test_inference.py             # Regex fallback, metrics, and health endpoint tests
+│   │   ├── test_telemetry.py             # OpenTelemetry trace, metric, PII, & log-correlation tests
+│   │   └── test_trainer.py               # SFTTrainer setup test
+│   ├── integration/
+│   │   └── test_server_integration.py    # End-to-end FastAPI validation, probes, & request-ID tests
+│   └── load/
+│       └── locustfile.py                 # Locust load testing suite
 ├── notebooks/
 │   └── qwen_sms_fine_tuning.ipynb        # Interactive end-to-end training & testing notebook
 └── data/                                 # Committed synthetic JSONL splits (800 / 150 / 50 samples)
@@ -180,7 +193,7 @@ print('MPS (Apple Silicon): ', torch.backends.mps.is_available())
 
 ## ⚙️ Configuration & Environment Variables
 
-Configuration is centralized in [`src/slm_sms/config.py`](src/slm_sms/config.py) via the `settings` singleton and automatically loads a `.env` file (via `python-dotenv`) if present.
+Configuration is centralized in [`src/slm_sms/core/config.py`](src/slm_sms/core/config.py) via the `settings` singleton and automatically loads a `.env` file (via `python-dotenv`) if present. YAML pipeline configs live in [`config/`](config/) (`generation_config.yaml`, `train_config.yaml`) and can be passed via `--config`.
 
 Copy the template to get started locally:
 ```bash
@@ -371,7 +384,7 @@ All responses include `X-Request-ID` (echoes incoming `X-Request-ID` or generate
 
 ## 📡 Observability (OpenTelemetry)
 
-Observability is implemented in [`src/slm_sms/telemetry.py`](src/slm_sms/telemetry.py) across all three pillars:
+Observability is implemented in [`src/slm_sms/core/telemetry.py`](src/slm_sms/core/telemetry.py) across all three pillars:
 
 1. **Distributed Tracing**:
    - FastAPI HTTP instrumentation (`FastAPIInstrumentor`) honors incoming W3C `traceparent` / `tracestate` headers, excludes `/health*` probe polling and ASGI micro-spans, and injects `http.request_id`.
@@ -466,8 +479,11 @@ uv run python scripts/export_merged_model.py \
 `pytest` is configured in [`pyproject.toml`](pyproject.toml) to measure coverage on `src/slm_sms` (`--cov-fail-under=60`) and write an HTML report to `htmlcov/index.html`:
 
 ```bash
-# Run unit, FastAPI integration, and OpenTelemetry tests (exclude Locust load script)
-uv run python -m pytest tests/ --ignore=tests/locustfile.py -v
+# Run unit & FastAPI integration tests (tests/load/ is automatically excluded)
+uv run python -m pytest -v
+# Or split by tier:
+make test-unit
+make test-integration
 ```
 
 ### Linting & Formatting (Ruff)
@@ -477,16 +493,16 @@ uv run python -m ruff format --check src/ scripts/ tests/
 ```
 
 ### Load Testing (Locust)
-[`tests/locustfile.py`](tests/locustfile.py) simulates mixed production traffic (`70%` single extract, `20%` batch extract of 2–10 SMS, `10%` health probes):
+[`tests/load/locustfile.py`](tests/load/locustfile.py) simulates mixed production traffic (`70%` single extract, `20%` batch extract of 2–10 SMS, `10%` health probes):
 
 ```bash
 # Terminal 1: start the API server (use SLM_LAZY_LOAD=true only for fallback/validation benchmarks)
 uv run python scripts/serve.py --port 8000
 
 # Terminal 2: launch Locust UI at http://localhost:8089
-uv run locust -f tests/locustfile.py --host http://localhost:8000
+uv run locust -f tests/load/locustfile.py --host http://localhost:8000
 
 # Or run headless load test
-uv run locust -f tests/locustfile.py --host http://localhost:8000 \
+uv run locust -f tests/load/locustfile.py --host http://localhost:8000 \
   --users 50 --spawn-rate 10 --run-time 60s --headless
 ```
