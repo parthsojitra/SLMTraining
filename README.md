@@ -324,7 +324,7 @@ uv run python scripts/evaluate.py --test_file ./data/test.jsonl --adapter_path .
 
 ## 📓 Interactive Jupyter Notebook
 
-Launch the walkthrough notebook for hardware checks, pandas data exploration, zero-shot vs fine-tuned comparisons, and interactive testing:
+Launch the end-to-end notebook mirroring the production pipeline (YAML config loading, synthetic generation, LoRA setup, `SMSTrainingPipeline`, `compute_extraction_metrics`, `SMSExtractorEngine` single/batch inference, and FastAPI + OpenTelemetry trace verification):
 
 ```bash
 uv run jupyter lab notebooks/qwen_sms_fine_tuning.ipynb
