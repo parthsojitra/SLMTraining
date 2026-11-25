@@ -33,7 +33,7 @@ def main():
         sms_text = rec["messages"][1]["content"]
         gt_json = rec["messages"][2]["content"]
         res = engine.extract(sms_text)
-        predictions.append(res["raw_output"])
+        predictions.append(json.dumps(res["entity"]))
         ground_truths.append(json.loads(gt_json))
         if idx % 20 == 0 or idx == len(records):
             print(f"  Processed {idx}/{len(records)} samples...")

@@ -1,30 +1,31 @@
-# 🇮🇳 SLM-SMS: Production-Grade Indian SMS Entity Extraction & Fine-Tuning
+# 🇮🇳 SLM-SMS: Indian SMS Entity Extraction & Fine-Tuning
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg?logo=python&logoColor=white)](https://python.org)
 [![uv](https://img.shields.io/badge/Managed%20by-uv-DE5FE9.svg?logo=astral&logoColor=white)](https://github.com/astral-sh/uv)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Transformers%20%7C%20PEFT%20%7C%20TRL-FFD21E.svg?logo=huggingface&logoColor=black)](https://huggingface.co)
-[![FastAPI](https://img.shields.io/badge/FastAPI-Production%20Ready-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Microservice-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 
-An end-to-end, production-ready Small Language Model (SLM) pipeline to fine-tune **Qwen3.5 2B** (and **Qwen2.5 1.5B / 3B**) for structured JSON entity extraction from complex, unstructured Indian SMS text messages (Banking Debits, Credits, UPI, OTPs, Bill Due Reminders, and Spam/Phishing detection).
+An end-to-end Small Language Model (SLM) pipeline to fine-tune **Qwen3.5 2B** (with **Qwen2.5** support) for structured JSON entity extraction from Indian SMS messages—covering banking debits/credits, UPI payments, OTPs, bill due notices, and spam/phishing detection.
 
-Includes **both** a fully documented, interactive **Jupyter Notebook** and a modular, tested, enterprise-grade **Production System** with CLI commands and a high-throughput **FastAPI Microservice**.
+Includes **both** an interactive **Jupyter Notebook** and a production-ready **Python package, CLI, and FastAPI/Gunicorn microservice**.
 
 ---
 
 ## 📌 Table of Contents
 
-- [Architecture Overview](#-architecture-overview)
+- [Architecture Overview](#️-architecture-overview)
 - [Key Features](#-key-features)
 - [Project Directory Structure](#-project-directory-structure)
 - [Quickstart with UV](#-quickstart-with-uv)
+- [Configuration & Environment Variables](#️-configuration--environment-variables)
 - [Indian SMS Synthetic Corpus Generator](#-indian-sms-synthetic-corpus-generator)
 - [Model Fine-Tuning Pipeline](#-model-fine-tuning-pipeline)
 - [Evaluation & Benchmarking](#-evaluation--benchmarking)
 - [Interactive Jupyter Notebook](#-interactive-jupyter-notebook)
-- [Production Serving with FastAPI](#-production-serving-with-fastapi)
+- [Single SMS CLI Inference](#-single-sms-cli-inference)
+- [Production Serving with FastAPI & Gunicorn](#-production-serving-with-fastapi--gunicorn)
 - [LoRA Weight Merging & Export](#-lora-weight-merging--export)
-- [Testing & Quality Assurance](#-testing--quality-assurance)
+- [Testing, Coverage, Linting & Load Testing](#-testing-coverage-linting--load-testing)
 
 ---
 
@@ -33,23 +34,23 @@ Includes **both** a fully documented, interactive **Jupyter Notebook** and a mod
 ```mermaid
 flowchart TD
     subgraph DataEngine ["Data Engine & Generator"]
-        A[Indian Financial SMS Patterns\nHDFC, ICICI, SBI, UPI, OTP, Spam] --> B[IndianSMSGenerator]
-        B --> C[Hugging Face Chat Template Dataset\ntrain.jsonl / val.jsonl / test.jsonl]
+        A["Indian SMS Templates (HDFC, ICICI, SBI, UPI, OTP, Bill, Spam)"] --> B["IndianSMSGenerator (Thread-Safe RNG & Indian Lakh Format)"]
+        B --> C["Chat-Template JSONL Splits (train.jsonl / val.jsonl / test.jsonl)"]
     end
 
     subgraph TrainingPipeline ["Fine-Tuning Pipeline (PEFT + TRL)"]
-        D[Qwen3.5 2B / Qwen2.5 Base Model] --> E[LoRA Adapter Injection\nq, k, v, o, gate, up, down proj]
-        C --> F[TRL SFTTrainer]
+        D["Base Model: Qwen/Qwen3.5-2B"] --> E["LoRA Adapter Injection (q, k, v, o, gate, up, down proj)"]
+        C --> F["TRL SFTTrainer"]
         E --> F
-        F --> G[Trained LoRA Weights\noutput/qwen-sms-lora]
+        F --> G["LoRA Weights (output/qwen-sms-lora)"]
     end
 
     subgraph ProductionServing ["Production Inference & API"]
-        G --> H[SMSExtractorEngine]
+        G --> H["SMSExtractorEngine (Pinned Revision + Native GPU Batch + Regex Fallback)"]
         D --> H
-        H --> I[FastAPI Microservice\nPOST /api/v1/extract]
-        H --> J[Merged Standalone Model\nfor vLLM / Ollama]
-        I --> K[Validated Pydantic SMSEntity JSON]
+        H --> I["FastAPI + ThreadPoolExecutor + Gunicorn/Uvicorn"]
+        H --> J["Merged Standalone Model (safetensors for vLLM / Ollama)"]
+        I --> K["Validated SMSEntity JSON + X-Request-ID + Structured JSON Logs"]
     end
 ```
 
@@ -57,23 +58,26 @@ flowchart TD
 
 ## ✨ Key Features
 
-1. **Lightning Fast Package Management with `uv`**:
-   Zero-friction virtual environment creation, deterministic locks, and multi-platform dependency resolution.
-2. **Qwen Model Family Support**:
-   Pre-configured for `Qwen/Qwen3.5-2B`, `Qwen/Qwen2.5-1.5B-Instruct`, and `Qwen/Qwen2.5-3B-Instruct`.
-3. **Comprehensive Indian SMS Synthesis**:
-   Realistic generator producing:
-   - **Bank Sender IDs**: `VM-HDFCBK`, `AD-ICICIB`, `BZ-SBIINB`, `AX-AXISBK`, `VK-KOTAKB`, `BP-PAYTM`, etc.
-   - **Multi-modal Transactions**: UPI handles (`swiggy@axisbank`, `blinkit@icici`), ATM withdrawals, POS swipes, NetBanking NEFT/IMPS, EMI debits.
-   - **OTP Authentication**: 3D-secure codes, NetBanking login OTPs, Aadhaar e-KYC codes.
-   - **Bill Notices**: Credit card statements, BESCOM electricity dues, telecom recharges.
-   - **Spam & Phishing**: Instant pre-approved loans, casino/rummy rewards, fake YONO KYC alerts.
-4. **Resilient Production Inference Engine**:
-   Dual-layer architecture: neural LLM structured generation backed by a deterministic regex fallback to guarantee 99.99% uptime and zero 500 crashes even during cold starts or transient faults.
-5. **High-Throughput Microservice**:
-   FastAPI app with CORS, health monitoring, single (`/api/v1/extract`) and concurrent batch (`/api/v1/extract/batch`) endpoints.
-6. **Dual Track: Notebook & CLI**:
-   Step-by-step interactive educational notebook in `notebooks/` and production scripts / CLIs in `src/` and `scripts/`.
+- **Fast Package Management with `uv`**: Deterministic environment and lockfile (`pyproject.toml` + `uv.lock`) targeting Python `3.12` (`>=3.12, <3.13`).
+- **Qwen Fine-Tuning via PEFT + TRL**: Default `Qwen/Qwen3.5-2B` (plus `Qwen/Qwen2.5-1.5B-Instruct`, `3B`, `0.5B` configs in `config/train_config.yaml`) with 4-bit/8-bit QLoRA on CUDA, `float16` on Apple Silicon MPS, and CPU fallback.
+- **Domain-Specific Indian SMS Synthesizer (`IndianSMSGenerator`)**:
+  - Covers 10 Indian banks (`VM-HDFCBK`, `AD-ICICIB`, `BZ-SBIINB`, `AX-AXISBK`, `VK-KOTAKB`, etc.), 32 merchants/VPAs, 7 UPI apps, OTPs, utility/credit-card bills, and spam/phishing messages.
+  - **True Indian Number Formatting**: Formats currency using Indian lakh/crore grouping (`1,45,000.00`, `14,50,000.00`).
+  - **Thread-Safe Reproducibility**: Uses an isolated `random.Random(seed)` instance per generator instead of global RNG state.
+  - **Class Imbalance Guard**: Logs class distribution during dataset generation and raises an error if any class falls below `min_class_fraction` (default `0.02`).
+- **Resilient Inference Engine (`SMSExtractorEngine`)**:
+  - Uses Hugging Face revision pinning (`SLM_MODEL_REVISION`) to guard against unpinned `trust_remote_code` supply-chain drift.
+  - `extract_batch()` uses native left-padded batched GPU generation rather than sequential loops.
+  - Automatic deterministic regex fallback when model weights are unavailable or generation fails schema parsing, without leaking raw LLM output in API responses.
+- **Production FastAPI Microservice**:
+  - Lifespan-managed single engine initialization in `app.state.engine` (eliminates lazy-init race conditions).
+  - Non-blocking inference offloaded to a configurable `ThreadPoolExecutor` (`SLM_INFERENCE_THREADS`).
+  - Strict Pydantic input limits (`1–480` characters per SMS; `1–50` items per batch request).
+  - Split Kubernetes probes (`/health/live` vs `/health/ready`) and graceful shutdown draining (`SLM_DRAIN_SECONDS`).
+  - Centralized JSON logging (`slm_sms.logging_config`) and `X-Request-ID` middleware across all requests.
+  - Ready-to-run `gunicorn.conf.py` using `UvicornWorker`.
+- **Quality & Load Testing**:
+  - 34 unit + HTTP integration tests with `pytest-cov` (`--cov-fail-under=60`), Ruff linting/formatting, and a `tests/locustfile.py` load test suite.
 
 ---
 
@@ -81,42 +85,50 @@ flowchart TD
 
 ```text
 SLMTraining/
-├── pyproject.toml                     # Modern UV project specification with extras
-├── README.md                          # Comprehensive documentation
+├── pyproject.toml                        # UV project definition, scripts, Ruff, Pytest & Coverage config
+├── uv.lock                               # Locked dependency graph
+├── gunicorn.conf.py                      # Production Gunicorn + UvicornWorker configuration
+├── .env.example                          # Documented environment variable template
+├── .gitignore                            # Ignores .venv, .env, output/, models/, .coverage, htmlcov/
+├── README.md                             # Project documentation
 ├── config/
-│   ├── train_config.yaml              # Hyperparameters for PEFT LoRA and SFTTrainer
-│   └── generation_config.yaml         # Synthetic SMS distribution configuration
+│   ├── generation_config.yaml            # Synthetic corpus distribution settings
+│   └── train_config.yaml                 # Base model, LoRA, and SFTTrainer hyperparameters
 ├── src/
 │   └── slm_sms/
 │       ├── __init__.py
-│       ├── cli.py                     # Unified CLI tool (`slm-sms`)
+│       ├── config.py                     # Centralized Settings singleton (reads SLM_* env vars / .env)
+│       ├── logging_config.py             # Centralized JSON/text logging configuration
+│       ├── cli.py                        # Typer CLI (`slm-sms` and subcommand entry points)
 │       ├── data/
-│       │   ├── schema.py              # Pydantic SMSEntity & chat message models
-│       │   ├── generator.py           # Indian SMS domain-specific synthesizer
-│       │   └── dataset.py             # JSONL & Hugging Face Dataset loaders
+│       │   ├── schema.py                 # Pydantic SMSEntity, TransactionType, & SMSChatSample models
+│       │   ├── generator.py              # Thread-safe Indian SMS synthetic data generator
+│       │   └── dataset.py                # JSONL I/O & Hugging Face DatasetDict loader
 │       ├── models/
-│       │   └── model_loader.py        # Tokenizer, Base model, PEFT LoRA setup
+│       │   └── model_loader.py           # Device detection, revision-pinned HF loaders, PEFT LoRA setup
 │       ├── training/
-│       │   ├── trainer.py             # Production TRL SFTTrainer pipeline
-│       │   └── metrics.py             # JSON validity, accuracy, and spam F1 metrics
-│       ├── inference/
-│       │   ├── engine.py              # Low-latency inference engine with fallback
-│       │   └── server.py              # Production FastAPI HTTP microservice
-│       └── utils/
+│       │   ├── trainer.py                # TRL SFTTrainer pipeline (CUDA/MPS/CPU precision aware)
+│       │   └── metrics.py                # ExtractionMetricsReport (JSON validity, field accuracy, spam F1)
+│       └── inference/
+│           ├── engine.py                 # SMSExtractorEngine (single, batched GPU, regex fallback)
+│           └── server.py                 # FastAPI microservice with probes, validation, & request IDs
 ├── scripts/
-│   ├── generate_data.py               # Standalone data generation script
-│   ├── train.py                       # Fine-tuning CLI runner
-│   ├── evaluate.py                    # Benchmark & accuracy evaluation runner
-│   ├── inference.py                   # Single SMS extraction CLI runner
-│   ├── serve.py                       # FastAPI server runner
-│   └── export_merged_model.py         # Merges LoRA into base weights for vLLM/Ollama
+│   ├── generate_data.py                  # Standalone data generation script
+│   ├── train.py                          # Standalone fine-tuning script
+│   ├── evaluate.py                       # Standalone test-set evaluation script
+│   ├── inference.py                      # Single SMS CLI inference script
+│   ├── serve.py                          # Uvicorn server runner (loads .env)
+│   └── export_merged_model.py            # Merges LoRA weights into base model for vLLM / Ollama
 ├── tests/
-│   ├── test_schema.py                 # Pydantic schema validation tests
-│   ├── test_generator.py              # Synthetic SMS generation tests
-│   └── test_inference.py              # Inference, metrics, & API route tests
+│   ├── test_schema.py                    # Schema cleaning & JSON markdown extraction tests
+│   ├── test_generator.py                 # Generator splits, Indian number formatting, RNG & balance tests
+│   ├── test_inference.py                 # Regex fallback, metrics, and health endpoint tests
+│   ├── test_server_integration.py        # End-to-end FastAPI validation, probes, & request-ID tests
+│   ├── test_trainer.py                   # SFTTrainer setup test
+│   └── locustfile.py                     # Locust load testing suite
 ├── notebooks/
-│   └── qwen_sms_fine_tuning.ipynb     # Interactive, end-to-end Jupyter Notebook
-└── data/                              # Generated JSONL splits
+│   └── qwen_sms_fine_tuning.ipynb        # Interactive end-to-end training & testing notebook
+└── data/                                 # Committed synthetic JSONL splits (800 / 150 / 50 samples)
     ├── train.jsonl
     ├── val.jsonl
     └── test.jsonl
@@ -126,21 +138,27 @@ SLMTraining/
 
 ## ⚡ Quickstart with UV
 
-### 1. Install `uv` (if not already installed)
+### 1. Install `uv`
 ```bash
 # macOS / Linux
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 2. Clone Repository and Sync Dependencies
+### 2. Sync Dependencies
 ```bash
 cd SLMTraining
 
-# Install core dependencies + notebook tools + development extras
+# Core dependencies only
+uv sync
+
+# Core + Jupyter Notebook + Dev/Test/Load tools
 uv sync --extra notebook --extra dev
+
+# Optional: include CUDA bitsandbytes for 4-bit/8-bit QLoRA on Linux NVIDIA GPUs
+uv sync --extra cuda --extra dev
 ```
 
-### 3. Verify Hardware & Installation
+### 3. Verify Hardware & Environment
 ```bash
 uv run python -c "
 import torch, transformers, peft, trl
@@ -153,9 +171,41 @@ print('MPS (Apple Silicon): ', torch.backends.mps.is_available())
 
 ---
 
+## ⚙️ Configuration & Environment Variables
+
+Configuration is centralized in [`src/slm_sms/config.py`](src/slm_sms/config.py) via the `settings` singleton and automatically loads a `.env` file (via `python-dotenv`) if present.
+
+Copy the template to get started locally:
+```bash
+cp .env.example .env
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SLM_MODEL_ID` | `Qwen/Qwen3.5-2B` | Hugging Face model ID or local model directory |
+| `SLM_MODEL_REVISION` | *unset* | Git commit hash to pin model & tokenizer downloads |
+| `SLM_ADAPTER_PATH` | *unset* | Path to fine-tuned LoRA adapter weights |
+| `HF_HOME` | `~/.cache/huggingface` | Persistent directory for cached model weights |
+| `SLM_MAX_NEW_TOKENS` | `128` | Max generated tokens per SMS |
+| `SLM_TEMPERATURE` | `0.01` | Sampling temperature (`0` for greedy decoding) |
+| `SLM_TOP_P` | `0.95` | Nucleus sampling probability |
+| `SLM_LAZY_LOAD` | `false` | If `true`, starts API without loading weights (`503` on `/health/ready`) |
+| `SLM_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed CORS origins |
+| `SLM_API_KEY` | `changeme` | Configured in `Settings` (note: auth middleware is not enforced yet) |
+| `SLM_INFERENCE_THREADS` | `2` | `ThreadPoolExecutor` worker count for async inference offload |
+| `SLM_DRAIN_SECONDS` | `10` | Seconds to drain in-flight requests during lifespan shutdown |
+| `SLM_LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `SLM_LOG_JSON` | *auto* | Force JSON (`true`) or plain text (`false`); auto-detects non-TTY |
+| `GUNICORN_WORKERS` | `1` | Gunicorn worker processes (keep at `1` per GPU) |
+| `GUNICORN_PORT` | `8000` | Gunicorn bind port |
+| `GUNICORN_TIMEOUT` | `120` | Gunicorn worker timeout in seconds |
+
+---
+
 ## 📊 Indian SMS Synthetic Corpus Generator
 
-The generator produces messages adhering to standard Hugging Face Chat Template format:
+The repository ships with a sample dataset in `data/` (`800` train, `150` val, `50` test). Each record uses standard Hugging Face chat-template format and validates against `SMSEntity`:
+
 ```json
 {
   "messages": [
@@ -169,49 +219,42 @@ The generator produces messages adhering to standard Hugging Face Chat Template 
     },
     {
       "role": "assistant",
-      "content": "{\"type\":\"debit\",\"amount\":1450.0,\"currency\":\"INR\",\"merchant\":\"swiggy@axisbank\",\"account\":\"4821\",\"balance\":34210.5,\"reference_id\":\"432819284129\",\"category\":\"food_dining\",\"spam\":false}"
+      "content": "{\"type\":\"debit\",\"amount\":1450.0,\"currency\":\"INR\",\"merchant\":\"swiggy@axisbank\",\"account\":\"4821\",\"balance\":34210.5,\"reference_id\":\"432819284129\",\"date_time\":\"23-11-26 14:20:00\",\"category\":\"food_dining\",\"spam\":false}"
     }
   ]
 }
 ```
 
-### Generate Dataset via CLI
-```bash
-# Generate 2,500 realistic samples (80% train, 15% validation, 5% test)
-uv run slm-sms generate --samples 2500 --output-dir ./data
-```
+**Extracted `SMSEntity` fields**: `type` (`debit`, `credit`, `otp`, `bill`, `refund`, `promo`, `info`, `spam`), `amount`, `currency`, `merchant`, `account`, `balance`, `reference_id`, `date_time`, `otp`, `category`, and `spam`.
 
-Or via direct script:
+### Generate a Custom Dataset
 ```bash
-uv run python scripts/generate_data.py --samples 2500 --output_dir ./data
+# Via unified Typer CLI (default: 2000 samples, 80/15/5 split)
+uv run slm-sms generate --samples 2500 --output-dir ./data --seed 42
+
+# Or via standalone script
+uv run python scripts/generate_data.py --samples 2500 --output_dir ./data --seed 42
 ```
 
 ---
 
 ## 🧠 Model Fine-Tuning Pipeline
 
-Fine-tuning leverages **PEFT LoRA** with **TRL SFTTrainer**.
+Fine-tuning uses **PEFT LoRA** and **TRL `SFTTrainer`** (`src/slm_sms/training/trainer.py`). Precision flags (`bf16`, `fp16`, `use_cpu`) and `SFTTrainer` kwargs (`processing_class` vs `tokenizer`) are resolved dynamically based on your hardware and installed TRL version.
 
 ### Hardware Support
-- **NVIDIA GPU (CUDA)**: Supports 4-bit / 8-bit QLoRA using `bitsandbytes`, `bfloat16`, and gradient checkpointing.
-- **Apple Silicon (Mac MPS)**: Supports unified memory training in `float16`.
-- **CPU**: Clean fallback with automated CPU thread orchestration.
+- **NVIDIA GPU (CUDA)**: Optional 4-bit / 8-bit QLoRA (`bitsandbytes`), `bfloat16`/`float16`.
+- **Apple Silicon (Mac MPS)**: Trains in `float16`.
+- **CPU**: Automatic fallback (`use_cpu=True`, `float32`).
 
 ### Target LoRA Modules
 ```python
-target_modules = [
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",  # Self-attention projections
-    "gate_proj",
-    "up_proj",
-    "down_proj",  # MLP feed-forward layers
-]
+["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 ```
 
-### Launch Fine-Tuning
+### Run Training
 ```bash
+# Via CLI
 uv run slm-sms train \
   --model-id "Qwen/Qwen3.5-2B" \
   --data-dir ./data \
@@ -220,76 +263,97 @@ uv run slm-sms train \
   --batch-size 4 \
   --grad-accum 4 \
   --learning-rate 2e-4
-```
 
-For NVIDIA GPUs with 4-bit QLoRA:
-```bash
+# With 4-bit QLoRA on CUDA
 uv run slm-sms train --model-id "Qwen/Qwen3.5-2B" --4bit
+
+# Or via standalone script
+uv run python scripts/train.py --model_id "Qwen/Qwen3.5-2B" --epochs 3
 ```
 
 ---
 
 ## 📈 Evaluation & Benchmarking
 
-Benchmark the fine-tuned model against test data across 6 critical dimensions:
-- **JSON Validity Rate**: Percentage of model responses that parse as valid JSON.
-- **Type Accuracy**: Exact match on classification (`debit`, `credit`, `otp`, `bill`, `spam`).
-- **Amount Accuracy**: Exact numerical match (with decimal precision).
-- **Merchant Match Rate**: Normalized merchant identification.
-- **Account Match Rate**: Last 4 digits of card/bank account.
-- **Spam Precision & Recall**: F1 score for unsolicited or phishing content.
+Evaluate predictions against `./data/test.jsonl` using [`src/slm_sms/training/metrics.py`](src/slm_sms/training/metrics.py):
 
 ```bash
-uv run slm-sms evaluate --test-file ./data/test.jsonl --adapter-path ./output/qwen-sms-lora
+# Via CLI
+uv run slm-sms evaluate --test-file ./data/test.jsonl --adapter-path ./output/qwen-sms-lora --max-samples 50
+
+# Or via standalone script
+uv run python scripts/evaluate.py --test_file ./data/test.jsonl --adapter_path ./output/qwen-sms-lora --max_samples 50
 ```
 
-Sample Benchmark Output:
-```text
-  Extraction Benchmark Report  
-┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
-┃ Metric             ┃ Value  ┃
-┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
-│ total_samples      │ 125    │
-│ valid_json_count   │ 125    │
-│ json_validity_rate │ 100.0% │
-│ type_accuracy      │ 98.4%  │
-│ amount_accuracy    │ 97.6%  │
-│ merchant_accuracy  │ 94.2%  │
-│ account_accuracy   │ 96.8%  │
-│ spam_f1            │ 96.0%  │
-│ overall_score      │ 97.1%  │
-└────────────────────┴────────┘
-```
+`ExtractionMetricsReport.to_dict()` computes and reports:
+- `total_samples`, `valid_json_count`, `json_validity_rate`
+- `type_accuracy`, `amount_accuracy`, `merchant_accuracy`, `account_accuracy`
+- `spam_precision`, `spam_recall`, `spam_f1`
+- `overall_score` (weighted score across validity, type, amount, merchant, and account accuracy)
 
 ---
 
 ## 📓 Interactive Jupyter Notebook
 
-Launch the notebook to inspect data, visualize training metrics, and test sample messages interactively:
+Launch the walkthrough notebook for hardware checks, pandas data exploration, zero-shot vs fine-tuned comparisons, and interactive testing:
 
 ```bash
 uv run jupyter lab notebooks/qwen_sms_fine_tuning.ipynb
 ```
 
-### Notebook Sections:
-1. **Hardware Diagnostics**: CUDA, MPS, and RAM checks.
-2. **Data Generation & Pandas Exploration**: Inspect distributions of transaction types, merchants, and amount statistics.
-3. **Zero-Shot Base Model Audit**: Observe how un-fine-tuned models struggle with strict JSON schemas.
-4. **LoRA Parameter Inspection**: Visualize the ~99% parameter reduction with PEFT.
-5. **TRL SFT Training**: Step-by-step training loop with loss curves.
-6. **Live Interactive Tester**: Paste any raw Indian SMS and view structured outputs in real-time.
+---
+
+## 🔍 Single SMS CLI Inference
+
+Test extraction directly from the terminal (falls back to regex parsing automatically if weights cannot be loaded offline):
+
+```bash
+# Via CLI
+uv run slm-sms infer "[VM-HDFCBK] Rs.1,450.00 debited from A/c **4821 on 23-11-26 to swiggy@axisbank (UPI Ref: 432819284129). Avl Bal: Rs.34,210.50."
+
+# Or via standalone script
+uv run python scripts/inference.py --text "489201 is your secret OTP for transaction of Rs.2,499.00 on your Axis Bank Card **7712 at ZOMATO."
+```
 
 ---
 
-## 🚀 Production Serving with FastAPI
+## 🚀 Production Serving with FastAPI & Gunicorn
 
-Launch the high-performance HTTP microservice:
+### Start the Server
 
+**Production (Gunicorn + `UvicornWorker`):**
 ```bash
-uv run slm-sms serve --port 8000 --model-id "Qwen/Qwen3.5-2B" --adapter-path ./output/qwen-sms-lora
+SLM_MODEL_ID="Qwen/Qwen3.5-2B" \
+SLM_ADAPTER_PATH="./output/qwen-sms-lora" \
+uv run gunicorn slm_sms.inference.server:app -c gunicorn.conf.py
 ```
 
-### 1. Single SMS Extraction
+**Development / CLI:**
+```bash
+# Via unified CLI
+uv run slm-sms serve --port 8000 --model-id "Qwen/Qwen3.5-2B" --adapter-path ./output/qwen-sms-lora
+
+# Or via script with auto-reload & .env loading
+uv run python scripts/serve.py --reload
+```
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Service metadata & `engine_loaded` status |
+| `GET` | `/health/live` | Liveness probe — always returns `200` (`{"status": "alive"}`) |
+| `GET` | `/health/ready` | Readiness probe — returns `200` with device once loaded, `503` otherwise |
+| `GET` | `/health` | Legacy liveness alias (`{"status": "healthy"}`) |
+| `POST` | `/api/v1/extract` | Single SMS extraction (`text`: 1–480 chars) |
+| `POST` | `/api/v1/extract/batch` | Native GPU-batched extraction (`texts`: 1–50 strings, each 1–480 chars) |
+| `GET` | `/docs` | Interactive OpenAPI / Swagger UI |
+
+All responses include an `X-Request-ID` header (echoes an incoming `X-Request-ID` or generates a UUID4).
+
+### Example Requests
+
+**Single Extraction:**
 ```bash
 curl -X POST "http://localhost:8000/api/v1/extract" \
   -H "Content-Type: application/json" \
@@ -319,27 +383,23 @@ curl -X POST "http://localhost:8000/api/v1/extract" \
 }
 ```
 
-### 2. Batch SMS Extraction
+**Batch Extraction (1–50 items):**
 ```bash
 curl -X POST "http://localhost:8000/api/v1/extract/batch" \
   -H "Content-Type: application/json" \
   -d '{
     "texts": [
       "[VM-HDFCBK] Rs.1,450.00 debited from A/c **4821 to swiggy@axisbank",
-      "489201 is your secret OTP for transaction of Rs.2,499.00 on your Axis Bank Card **7712 at ZOMATO.",
-      "Congratulations! Pre-approved personal loan of Rs.5,00,000! Click bit.ly/loan99"
+      "489201 is your secret OTP for transaction of Rs.2,499.00 on your Axis Bank Card **7712 at ZOMATO."
     ]
   }'
 ```
-
-### 3. Interactive Swagger Documentation
-Navigate to `http://localhost:8000/docs` in your browser for the full interactive OpenAPI documentation.
 
 ---
 
 ## 📦 LoRA Weight Merging & Export
 
-For zero-overhead deployment using **vLLM**, **Triton**, or **Ollama**, merge the LoRA weights directly into the base model:
+Merge a trained LoRA adapter back into the base weights for standalone deployment with **vLLM**, **Triton**, or **Ollama**:
 
 ```bash
 uv run python scripts/export_merged_model.py \
@@ -348,19 +408,35 @@ uv run python scripts/export_merged_model.py \
   --output_dir ./models/qwen-sms-merged
 ```
 
-The resulting `./models/qwen-sms-merged` directory is a standalone Hugging Face model containing standard `safetensors` weights and tokenizer configurations.
-
 ---
 
-## 🧪 Testing & Quality Assurance
+## 🧪 Testing, Coverage, Linting & Load Testing
 
-Run the complete automated test suite:
+### Unit & HTTP Integration Tests (with Coverage)
+`pytest` is configured in [`pyproject.toml`](pyproject.toml) to measure coverage on `src/slm_sms` (`--cov-fail-under=60`) and write an HTML report to `htmlcov/index.html`:
+
 ```bash
-# Run 10 unit and integration tests with pytest
-uv run pytest -v
+# Run all 34 unit & FastAPI integration tests (exclude Locust load script)
+uv run python -m pytest tests/ --ignore=tests/locustfile.py -v
 ```
 
-Run code formatting and linting with Ruff:
+### Linting & Formatting (Ruff)
 ```bash
-uv run ruff check .
+uv run python -m ruff check src/ scripts/ tests/
+uv run python -m ruff format --check src/ scripts/ tests/
+```
+
+### Load Testing (Locust)
+[`tests/locustfile.py`](tests/locustfile.py) simulates mixed production traffic (`70%` single extract, `20%` batch extract of 2–10 SMS, `10%` health probes):
+
+```bash
+# Terminal 1: start the API server (use SLM_LAZY_LOAD=true only for fallback/validation benchmarks)
+uv run python scripts/serve.py --port 8000
+
+# Terminal 2: launch Locust UI at http://localhost:8089
+uv run locust -f tests/locustfile.py --host http://localhost:8000
+
+# Or run headless load test
+uv run locust -f tests/locustfile.py --host http://localhost:8000 \
+  --users 50 --spawn-rate 10 --run-time 60s --headless
 ```
