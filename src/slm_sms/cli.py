@@ -9,6 +9,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from slm_sms.config import settings  # P4 #17 — single source of truth for model ID
+
 app = typer.Typer(help="SLM SMS: Indian SMS Entity Extraction & Fine-Tuning CLI")
 console = Console()
 
@@ -58,7 +60,7 @@ def generate_cli(
 @app.command("train")
 def train_cli(
     model_id: str = typer.Option(
-        "Qwen/Qwen3.5-2B", "--model-id", "-m", help="Hugging Face Model ID"
+        settings.model_id, "--model-id", "-m", help="Hugging Face Model ID"
     ),
     data_dir: Path = typer.Option(
         Path("./data"), "--data-dir", "-d", help="Directory with train.jsonl & val.jsonl"
@@ -100,7 +102,7 @@ def train_cli(
 @app.command("infer")
 def infer_cli(
     text: str = typer.Argument(..., help="Indian SMS text to analyze"),
-    model_id: str = typer.Option("Qwen/Qwen3.5-2B", "--model-id", "-m", help="Base model ID"),
+    model_id: str = typer.Option(settings.model_id, "--model-id", "-m", help="Base model ID"),
     adapter_path: str | None = typer.Option(
         None, "--adapter-path", "-a", help="Path to LoRA adapter"
     ),
@@ -124,7 +126,7 @@ def evaluate_cli(
     test_file: Path = typer.Option(
         Path("./data/test.jsonl"), "--test-file", "-t", help="Test JSONL file"
     ),
-    model_id: str = typer.Option("Qwen/Qwen3.5-2B", "--model-id", "-m", help="Base model ID"),
+    model_id: str = typer.Option(settings.model_id, "--model-id", "-m", help="Base model ID"),
     adapter_path: str | None = typer.Option(
         None, "--adapter-path", "-a", help="Path to LoRA adapter"
     ),
@@ -146,7 +148,8 @@ def evaluate_cli(
             sms_text = rec["messages"][1]["content"]
             gt_json = rec["messages"][2]["content"]
             result = engine.extract(sms_text)
-            predictions.append(result["raw_output"])
+            # Serialize extracted entity back to JSON string for metrics comparison
+            predictions.append(json.dumps(result["entity"]))
             ground_truths.append(json.loads(gt_json))
 
     report = compute_extraction_metrics(predictions, ground_truths)
@@ -165,7 +168,7 @@ def serve_cli(
     host: str = typer.Option("0.0.0.0", "--host", "-h", help="Bind host"),
     port: int = typer.Option(8000, "--port", "-p", help="Bind port"),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
-    model_id: str = typer.Option("Qwen/Qwen3.5-2B", "--model-id", help="Model ID"),
+    model_id: str = typer.Option(settings.model_id, "--model-id", help="Model ID"),
     adapter_path: str | None = typer.Option(None, "--adapter-path", help="Adapter path"),
 ):
     """Launch production FastAPI HTTP microservice."""

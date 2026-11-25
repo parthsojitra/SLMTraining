@@ -39,7 +39,9 @@ notebook = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
+    "locust>=2.29.0",
 ]
 all = [
     "slm-sms[notebook,dev]",
@@ -76,3 +78,21 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
+addopts = [
+    "--cov=slm_sms",
+    "--cov-report=term-missing",
+    "--cov-report=html:htmlcov",
+    "--cov-fail-under=60",
+]
+
+[tool.coverage.run]
+source = ["src/slm_sms"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+]

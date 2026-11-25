@@ -17,7 +17,6 @@ class IndianSMSGenerator:
     """Configurable synthetic data generator for Indian SMS messages."""
 
     SYSTEM_PROMPT = "Extract structured JSON from SMS. Output valid JSON only."
-
     BANKS = [
         {"name": "HDFC Bank", "code": "HDFCBK", "headers": ["VM-HDFCBK", "AD-HDFCBK", "QP-HDFCBK"]},
         {
@@ -89,12 +88,14 @@ class IndianSMSGenerator:
     CURRENCY_SYMBOLS = ["Rs.", "Rs ", "INR ", "₹", "Rs. "]
 
     def __init__(self, seed: int | None = 42):
-        if seed is not None:
-            random.seed(seed)
+        # P4 #20 — use a local Random instance instead of the global random module
+        # so that multiple IndianSMSGenerator instances or parallel calls do not
+        # interfere with each other's random state.
+        self.rng = random.Random(seed)
 
     def _rand_amount(self, min_amt: float = 20.0, max_amt: float = 85000.0) -> float:
-        amt = round(random.uniform(min_amt, max_amt), 2)
-        if amt > 1000 and random.random() < 0.4:
+        amt = round(self.rng.uniform(min_amt, max_amt), 2)
+        if amt > 1000 and self.rng.random() < 0.4:
             amt = float(round(amt))
         return amt
 
@@ -104,15 +105,15 @@ class IndianSMSGenerator:
         return f"{curr_sym}{s}"
 
     def _rand_account(self) -> str:
-        return f"{random.randint(1000, 9999)}"
+        return f"{self.rng.randint(1000, 9999)}"
 
     def _rand_ref(self) -> str:
         # UPI ref or UTR is usually 12 digits
-        return f"{random.randint(400000000000, 499999999999)}"
+        return f"{self.rng.randint(400000000000, 499999999999)}"
 
     def _rand_date_time(self) -> tuple[str, str]:
-        days_ago = random.randint(0, 45)
-        dt = datetime.now() - timedelta(days=days_ago, minutes=random.randint(5, 720))
+        days_ago = self.rng.randint(0, 45)
+        dt = datetime.now() - timedelta(days=days_ago, minutes=self.rng.randint(5, 720))
         date_formats = [
             dt.strftime("%d-%m-%y"),
             dt.strftime("%d-%m-%Y"),
@@ -126,26 +127,26 @@ class IndianSMSGenerator:
             dt.strftime("%H:%M"),
             dt.strftime("%I:%M %p"),
         ]
-        return random.choice(date_formats), random.choice(time_formats)
+        return self.rng.choice(date_formats), self.rng.choice(time_formats)
 
     def _rand_otp(self) -> str:
-        return f"{random.randint(100000, 999999)}"
+        return f"{self.rng.randint(100000, 999999)}"
 
     # ---------------- Generator Methods ---------------- #
 
     def generate_debit_sample(self) -> tuple[str, SMSEntity]:
-        bank = random.choice(self.BANKS)
-        header = random.choice(bank["headers"])
-        merchant = random.choice(self.MERCHANTS)
+        bank = self.rng.choice(self.BANKS)
+        header = self.rng.choice(bank["headers"])
+        merchant = self.rng.choice(self.MERCHANTS)
         account = self._rand_account()
         amount = self._rand_amount(45.0, 35000.0)
-        curr_sym = random.choice(self.CURRENCY_SYMBOLS)
+        curr_sym = self.rng.choice(self.CURRENCY_SYMBOLS)
         formatted_amount = self._format_amt(amount, curr_sym)
-        bal_amount = round(random.uniform(500.0, 150000.0), 2)
+        bal_amount = round(self.rng.uniform(500.0, 150000.0), 2)
         formatted_bal = self._format_amt(bal_amount, curr_sym)
         date_str, time_str = self._rand_date_time()
         ref_id = self._rand_ref()
-        use_vpa = random.random() < 0.65
+        use_vpa = self.rng.random() < 0.65
         merchant_str = merchant["vpa"] if use_vpa else merchant["name"]
 
         # Templates
@@ -155,12 +156,12 @@ class IndianSMSGenerator:
             f"Dear Customer, {formatted_amount} has been debited from your {bank['name']} A/c ending {account} towards {merchant_str} on {date_str} {time_str}. UPI Ref no {ref_id}. Avl Bal: {formatted_bal}.",
             f"Alert: {formatted_amount} spent on your {bank['name']} Card ending XX{account} at {merchant_str} on {date_str} at {time_str}. Avl Limit: {formatted_bal}.",
             f"A/c *{account} debited for {formatted_amount} on {date_str} {time_str} via UPI to {merchant_str}. UTR: {ref_id}. Bal: {formatted_bal} - {bank['name']}",
-            f"Paid {formatted_amount} to {merchant_str} via {random.choice(self.UPI_APPS)} UPI Ref {ref_id} from {bank['name']} A/c ...{account}. Avl Bal: {formatted_bal}",
+            f"Paid {formatted_amount} to {merchant_str} via {self.rng.choice(self.UPI_APPS)} UPI Ref {ref_id} from {bank['name']} A/c ...{account}. Avl Bal: {formatted_bal}",
             f"[{header}] A/c {account} debited by {formatted_amount} on {date_str}. Info: UPI/{ref_id}/{merchant_str}. Total Bal: {formatted_bal}.",
             f"Txn Alert: {formatted_amount} debited from your A/c {account} on {date_str} to VPA {merchant_str}. Ref: {ref_id}. Check balance on {bank['name']} App.",
         ]
 
-        text = random.choice(templates)
+        text = self.rng.choice(templates)
         entity = SMSEntity(
             type="debit",
             amount=amount,
@@ -176,23 +177,23 @@ class IndianSMSGenerator:
         return text, entity
 
     def generate_credit_sample(self) -> tuple[str, SMSEntity]:
-        bank = random.choice(self.BANKS)
-        header = random.choice(bank["headers"])
-        merchant = random.choice(self.MERCHANTS)
+        bank = self.rng.choice(self.BANKS)
+        header = self.rng.choice(bank["headers"])
+        merchant = self.rng.choice(self.MERCHANTS)
         account = self._rand_account()
         amount = self._rand_amount(100.0, 120000.0)
-        curr_sym = random.choice(self.CURRENCY_SYMBOLS)
+        curr_sym = self.rng.choice(self.CURRENCY_SYMBOLS)
         formatted_amount = self._format_amt(amount, curr_sym)
-        bal_amount = round(random.uniform(5000.0, 250000.0), 2)
+        bal_amount = round(self.rng.uniform(5000.0, 250000.0), 2)
         formatted_bal = self._format_amt(bal_amount, curr_sym)
         date_str, time_str = self._rand_date_time()
         ref_id = self._rand_ref()
 
         credit_types = ["salary", "refund", "upi_credit", "cashback"]
-        c_type = random.choice(credit_types)
+        c_type = self.rng.choice(credit_types)
 
         if c_type == "salary":
-            company = random.choice(
+            company = self.rng.choice(
                 [
                     "INFOSYS LTD",
                     "TCS CORP",
@@ -230,12 +231,12 @@ class IndianSMSGenerator:
                 spam=False,
             )
         elif c_type == "cashback":
-            text = f"Cashback Alert! {formatted_amount} credited to your A/c {account} from {random.choice(self.UPI_APPS)} for UPI txn {ref_id}. Net Bal: {formatted_bal}."
+            text = f"Cashback Alert! {formatted_amount} credited to your A/c {account} from {self.rng.choice(self.UPI_APPS)} for UPI txn {ref_id}. Net Bal: {formatted_bal}."
             entity = SMSEntity(
                 type="credit",
                 amount=amount,
                 currency="INR",
-                merchant=random.choice(self.UPI_APPS),
+                merchant=self.rng.choice(self.UPI_APPS),
                 account=account,
                 balance=bal_amount,
                 reference_id=ref_id,
@@ -261,18 +262,18 @@ class IndianSMSGenerator:
         return text, entity
 
     def generate_otp_sample(self) -> tuple[str, SMSEntity]:
-        bank = random.choice(self.BANKS)
-        header = random.choice(bank["headers"])
-        merchant = random.choice(self.MERCHANTS)
+        bank = self.rng.choice(self.BANKS)
+        header = self.rng.choice(bank["headers"])
+        merchant = self.rng.choice(self.MERCHANTS)
         account = self._rand_account()
         otp = self._rand_otp()
         amount = self._rand_amount(150.0, 45000.0)
-        curr_sym = random.choice(self.CURRENCY_SYMBOLS)
+        curr_sym = self.rng.choice(self.CURRENCY_SYMBOLS)
         formatted_amount = self._format_amt(amount, curr_sym)
         date_str, time_str = self._rand_date_time()
 
         otp_kinds = ["txn", "login", "aadhaar"]
-        kind = random.choice(otp_kinds)
+        kind = self.rng.choice(otp_kinds)
 
         if kind == "txn":
             templates = [
@@ -280,7 +281,7 @@ class IndianSMSGenerator:
                 f"[{header}] {otp} is your OTP for online purchase of {formatted_amount} at {merchant['name']} using Card ending {account}. Valid for 3 mins. Bank NEVER asks for OTP.",
                 f"Use OTP {otp} to approve payment of {formatted_amount} to {merchant['name']}. Generated at {time_str}. Do not disclose to anyone. - {bank['name']}",
             ]
-            text = random.choice(templates)
+            text = self.rng.choice(templates)
             entity = SMSEntity(
                 type="otp",
                 amount=amount,
@@ -297,7 +298,7 @@ class IndianSMSGenerator:
                 f"[{header}] {otp} is the OTP to login to your {bank['name']} NetBanking account. Valid for 3 mins. Do not share this with anyone including bank staff.",
                 f"Dear Customer, {otp} is your OTP for registering mobile banking on A/c ending {account}. Valid for 5 minutes. - {bank['name']}",
             ]
-            text = random.choice(templates)
+            text = self.rng.choice(templates)
             entity = SMSEntity(
                 type="otp",
                 account=account,
@@ -318,25 +319,25 @@ class IndianSMSGenerator:
         return text, entity
 
     def generate_bill_sample(self) -> tuple[str, SMSEntity]:
-        bank = random.choice(self.BANKS)
-        header = random.choice(bank["headers"])
+        bank = self.rng.choice(self.BANKS)
+        header = self.rng.choice(bank["headers"])
         account = self._rand_account()
         amount = self._rand_amount(800.0, 75000.0)
-        min_amount = round(amount * random.uniform(0.05, 0.15), 2)
-        curr_sym = random.choice(self.CURRENCY_SYMBOLS)
+        min_amount = round(amount * self.rng.uniform(0.05, 0.15), 2)
+        curr_sym = self.rng.choice(self.CURRENCY_SYMBOLS)
         formatted_amount = self._format_amt(amount, curr_sym)
         formatted_min = self._format_amt(min_amount, curr_sym)
         due_date, _ = self._rand_date_time()
 
         bill_types = ["credit_card", "electricity", "telecom"]
-        b_type = random.choice(bill_types)
+        b_type = self.rng.choice(bill_types)
 
         if b_type == "credit_card":
             templates = [
                 f"[{header}] Dear Customer, your Credit Card statement for Card ending {account} generated. Total Due: {formatted_amount}, Min Due: {formatted_min}, Due Date: {due_date}. Pay via NetBanking/App.",
                 f"Statement alert: Total amount due on your {bank['name']} Card XX{account} is {formatted_amount}. Minimum payment {formatted_min} due on {due_date}.",
             ]
-            text = random.choice(templates)
+            text = self.rng.choice(templates)
             entity = SMSEntity(
                 type="bill",
                 amount=amount,
@@ -348,7 +349,7 @@ class IndianSMSGenerator:
                 spam=False,
             )
         elif b_type == "electricity":
-            provider = random.choice(
+            provider = self.rng.choice(
                 ["BESCOM", "Tata Power", "Adani Electricity", "MSEDCL", "Torrent Power"]
             )
             text = f"Dear Consumer {account}, electricity bill of {formatted_amount} for your connection is due on {due_date}. Pay via UPI/portal to avoid disconnection. - {provider}"
@@ -363,7 +364,7 @@ class IndianSMSGenerator:
                 spam=False,
             )
         else:
-            telecom = random.choice(["Jio", "Airtel Postpaid", "Vi"])
+            telecom = self.rng.choice(["Jio", "Airtel Postpaid", "Vi"])
             text = f"Bill Alert: Your {telecom} bill for mobile {account} is {formatted_amount}. Due date is {due_date}. Pay now on My{telecom} app to enjoy uninterrupted services."
             entity = SMSEntity(
                 type="bill",
@@ -379,9 +380,9 @@ class IndianSMSGenerator:
         return text, entity
 
     def generate_spam_sample(self) -> tuple[str, SMSEntity]:
-        loan_amt = random.choice([200000, 300000, 500000, 1000000])
-        win_amt = random.choice([25000, 50000, 100000])
-        short_link = f"http://bit.ly/{random.choice(['instant-loan', 'sbi-update', 'rummy-cash', 'crypto-rich', 'win-gold'])}{random.randint(10, 99)}"
+        loan_amt = self.rng.choice([200000, 300000, 500000, 1000000])
+        win_amt = self.rng.choice([25000, 50000, 100000])
+        short_link = f"http://bit.ly/{self.rng.choice(['instant-loan', 'sbi-update', 'rummy-cash', 'crypto-rich', 'win-gold'])}{self.rng.randint(10, 99)}"
 
         spam_templates = [
             (
@@ -405,7 +406,7 @@ class IndianSMSGenerator:
                 SMSEntity(type="promo", merchant="Myntra", category="shopping", spam=True),
             ),
             (
-                f"Earn Rs.50,000 monthly working from home part-time using your smartphone! No investment needed. Limited openings. Contact on WhatsApp: +91-98{random.randint(10000000, 99999999)}",
+                f"Earn Rs.50,000 monthly working from home part-time using your smartphone! No investment needed. Limited openings. Contact on WhatsApp: +91-98{self.rng.randint(10000000, 99999999)}",
                 SMSEntity(type="spam", amount=50000.0, currency="INR", category="spam", spam=True),
             ),
             (
@@ -418,13 +419,13 @@ class IndianSMSGenerator:
             ),
         ]
 
-        text, entity = random.choice(spam_templates)
+        text, entity = self.rng.choice(spam_templates)
         return text, entity
 
     def generate_single_sample(self) -> tuple[str, SMSEntity]:
         """Generate a single sample with balanced distribution of SMS types."""
         # Distribution: 50% Debit (most common Indian SMS), 20% Credit/Refund, 15% OTP, 8% Bill, 7% Spam/Promo
-        rand = random.random()
+        rand = self.rng.random()
         if rand < 0.50:
             return self.generate_debit_sample()
         elif rand < 0.70:
@@ -455,7 +456,7 @@ class IndianSMSGenerator:
     ) -> dict[str, list[dict[str, Any]]]:
         """Generate train, val, and test splits."""
         all_samples = [self.generate_chat_sample().model_dump() for _ in range(n_samples)]
-        random.shuffle(all_samples)
+        self.rng.shuffle(all_samples)
 
         n_test = int(n_samples * test_split)
         n_val = int(n_samples * val_split)

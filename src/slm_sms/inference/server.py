@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -13,67 +12,64 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
+from slm_sms.config import settings  # P4 #17 — single source of truth
 from slm_sms.inference.engine import SMSExtractorEngine
 from slm_sms.logging_config import configure_logging, get_logger
 
 # ---------------------------------------------------------------------------
 # Logging — configure before anything else so all submodules pick it up
 # ---------------------------------------------------------------------------
-configure_logging()
+configure_logging(level=settings.log_level, use_json=settings.log_json)
 logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Thread-pool for offloading blocking model inference off the event loop
-# ---------------------------------------------------------------------------
-_INFERENCE_THREADS = int(os.getenv("SLM_INFERENCE_THREADS", "2"))
-_executor = ThreadPoolExecutor(max_workers=_INFERENCE_THREADS, thread_name_prefix="slm-infer")
-
 
 # ---------------------------------------------------------------------------
-# Lifespan — single authoritative init / teardown (P0 #4 fix)
+# Lifespan — single authoritative init / teardown (P0 #4)
 # ---------------------------------------------------------------------------
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager: load ML engine once at startup, clean up at shutdown."""
-    model_id = os.getenv("SLM_MODEL_ID", "Qwen/Qwen3.5-2B")
-    model_revision = os.getenv("SLM_MODEL_REVISION", None)  # P0 #5 — revision pin
-    adapter_path = os.getenv("SLM_ADAPTER_PATH", None)
-    lazy_load = os.getenv("SLM_LAZY_LOAD", "false").lower() == "true"
-
+    # Create executor per lifespan so TestClient reopens work correctly
+    executor = ThreadPoolExecutor(
+        max_workers=settings.inference_threads, thread_name_prefix="slm-infer"
+    )
+    app.state.executor = executor
+    # P4 #18 — engine initialized exactly once here; no duplicates anywhere
     app.state.engine: SMSExtractorEngine | None = None
 
-    if not lazy_load:
+    if not settings.lazy_load:
         try:
             logger.info(
                 "Starting inference engine",
                 extra={
-                    "model_id": model_id,
-                    "revision": model_revision,
-                    "adapter_path": adapter_path,
+                    "model_id": settings.model_id,
+                    "revision": settings.model_revision,
+                    "adapter_path": settings.adapter_path,
                 },
             )
             app.state.engine = SMSExtractorEngine(
-                model_id_or_path=model_id,
-                adapter_path=adapter_path,
-                model_revision=model_revision,
+                model_id_or_path=settings.model_id,
+                adapter_path=settings.adapter_path,
+                model_revision=settings.model_revision,
+                max_new_tokens=settings.max_new_tokens,
+                temperature=settings.temperature,
+                top_p=settings.top_p,
             )
-            logger.info("Inference engine ready", extra={"model_id": model_id})
+            logger.info("Inference engine ready", extra={"model_id": settings.model_id})
         except Exception as exc:
-            logger.warning(
-                "Engine initialisation deferred",
-                extra={"error": str(exc)},
-            )
+            logger.warning("Engine initialisation deferred", extra={"error": str(exc)})
 
     yield
 
-    # Graceful shutdown: allow in-flight requests to drain (P3 #15)
-    drain_secs = int(os.getenv("SLM_DRAIN_SECONDS", "10"))
-    logger.info("Shutting down — draining in-flight requests", extra={"drain_seconds": drain_secs})
-    await asyncio.sleep(drain_secs)
-
-    _executor.shutdown(wait=False)
+    # Graceful shutdown: drain in-flight requests (P3 #15)
+    logger.info(
+        "Shutting down — draining in-flight requests",
+        extra={"drain_seconds": settings.drain_seconds},
+    )
+    await asyncio.sleep(settings.drain_seconds)
+    executor.shutdown(wait=False)
     app.state.engine = None
     logger.info("Inference engine released")
 
@@ -92,15 +88,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — use explicit origins via env-var; never wildcard + credentials (P0 #1 documented)
-_allowed_origins = [
-    o.strip()
-    for o in os.getenv("SLM_CORS_ORIGINS", "http://localhost:3000").split(",")
-    if o.strip()
-]
+# CORS — explicit origins from settings (P0 #1 documented)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins,
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
@@ -198,7 +189,7 @@ class BatchExtractResponse(BaseModel):
 async def root(request: Request):
     return {
         "service": "Indian SMS Entity Extraction Microservice",
-        "model": os.getenv("SLM_MODEL_ID", "Qwen/Qwen3.5-2B"),
+        "model": settings.model_id,
         "status": "online",
         "engine_loaded": getattr(request.app.state, "engine", None) is not None,
     }
@@ -234,21 +225,16 @@ async def extract_single_sms(payload: ExtractRequest, request: Request):
     rid = getattr(request.state, "request_id", "-")
     engine = _get_engine(request)
 
-    logger.info(
-        "extract_start",
-        extra={"request_id": rid, "text_length": len(payload.text)},
-    )
+    logger.info("extract_start", extra={"request_id": rid, "text_length": len(payload.text)})
 
     loop = asyncio.get_event_loop()
     try:
         # P1 #7 — offload blocking model call to thread pool
-        result = await loop.run_in_executor(_executor, engine.extract, payload.text)
-    except Exception as exc:
-        logger.error(
-            "extract_error",
-            extra={"request_id": rid, "error": str(exc)},
-            exc_info=True,
+        result = await loop.run_in_executor(
+            request.app.state.executor, engine.extract, payload.text
         )
+    except Exception as exc:
+        logger.error("extract_error", extra={"request_id": rid, "error": str(exc)}, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Inference error: {exc!s}")
 
     logger.info(
@@ -273,29 +259,19 @@ async def extract_batch_sms(payload: BatchExtractRequest, request: Request):
     rid = getattr(request.state, "request_id", "-")
     engine = _get_engine(request)
 
-    logger.info(
-        "batch_extract_start",
-        extra={"request_id": rid, "batch_size": len(payload.texts)},
-    )
+    logger.info("batch_extract_start", extra={"request_id": rid, "batch_size": len(payload.texts)})
 
     loop = asyncio.get_event_loop()
     try:
         # P1 #6 & #7 — native batch inference, offloaded to thread pool
-        results = await loop.run_in_executor(_executor, engine.extract_batch, payload.texts)
+        results = await loop.run_in_executor(
+            request.app.state.executor, engine.extract_batch, payload.texts
+        )
     except Exception as exc:
         logger.error(
-            "batch_extract_error",
-            extra={"request_id": rid, "error": str(exc)},
-            exc_info=True,
+            "batch_extract_error", extra={"request_id": rid, "error": str(exc)}, exc_info=True
         )
         raise HTTPException(status_code=500, detail=f"Batch inference error: {exc!s}")
 
-    logger.info(
-        "batch_extract_done",
-        extra={"request_id": rid, "count": len(results)},
-    )
-    return BatchExtractResponse(
-        success=True,
-        count=len(results),
-        results=results,
-    )
+    logger.info("batch_extract_done", extra={"request_id": rid, "count": len(results)})
+    return BatchExtractResponse(success=True, count=len(results), results=results)

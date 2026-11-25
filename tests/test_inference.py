@@ -73,6 +73,7 @@ def test_metrics_computation():
 def test_fastapi_server_endpoints():
     # Use `with` so the lifespan context manager runs (SLM_LAZY_LOAD=true avoids model download)
     import os
+
     os.environ["SLM_LAZY_LOAD"] = "true"
 
     with TestClient(app) as client:
