@@ -28,6 +28,19 @@ def main():
     parser.add_argument("--lora_r", type=int, default=16, help="LoRA rank")
     parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA alpha")
     parser.add_argument("--use_4bit", action="store_true", help="Use 4-bit QLoRA (CUDA)")
+    parser.add_argument("--run_name", type=str, default=None, help="Optional versioned run name")
+    parser.add_argument(
+        "--description",
+        "-D",
+        type=str,
+        default=None,
+        help="Note describing what changed in this versioned run",
+    )
+    parser.add_argument(
+        "--no_versioned",
+        action="store_true",
+        help="Write directly to output_dir without runs/<timestamp> versioning",
+    )
     args = parser.parse_args()
 
     eval_batch_size = None
@@ -36,6 +49,8 @@ def main():
     eval_steps = 50
     save_total_limit = 2
     gradient_checkpointing = None
+    versioned = not args.no_versioned
+    description = args.description
 
     if args.config:
         raw_cfg = load_yaml_config(args.config)
@@ -47,6 +62,10 @@ def main():
         args.lora_r = int(l_cfg.get("r", args.lora_r))
         args.lora_alpha = int(l_cfg.get("lora_alpha", args.lora_alpha))
         args.output_dir = str(t_cfg.get("output_dir", args.output_dir))
+        if not args.no_versioned:
+            versioned = bool(t_cfg.get("versioned", versioned))
+        if description is None:
+            description = t_cfg.get("description")
         args.epochs = int(t_cfg.get("num_train_epochs", args.epochs))
         args.batch_size = int(t_cfg.get("per_device_train_batch_size", args.batch_size))
         eval_batch_size = t_cfg.get("per_device_eval_batch_size")
@@ -69,6 +88,9 @@ def main():
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
         use_4bit=args.use_4bit,
+        versioned=versioned,
+        run_name=args.run_name,
+        description=description,
     )
 
     print("Beginning training...")

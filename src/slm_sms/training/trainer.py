@@ -5,6 +5,10 @@ from __future__ import annotations
 import dataclasses
 import gc
 import inspect
+import json
+import os
+import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +31,69 @@ from slm_sms.models.model_loader import (
 logger = get_logger(__name__)
 
 
+def _collect_git_context() -> dict[str, Any] | None:
+    """Capture git commit, branch, and dirty status cleanly without failing outside git."""
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if commit.returncode != 0:
+            return None
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        return {
+            "commit": commit.stdout.strip(),
+            "branch": branch.stdout.strip() if branch.returncode == 0 else None,
+            "dirty": bool(status.stdout.strip()) if status.returncode == 0 else None,
+        }
+    except Exception:
+        return None
+
+
+def list_training_runs(output_dir: str | Path = "./output/qwen-sms-lora") -> list[dict[str, Any]]:
+    """List versioned training runs sorted newest-first with `is_latest` status."""
+    base = Path(output_dir)
+    runs_dir = base / "runs"
+    if not runs_dir.exists():
+        return []
+
+    latest_link = base / "latest"
+    latest_resolved = latest_link.resolve() if latest_link.exists() else None
+
+    entries: list[dict[str, Any]] = []
+    for run_path in sorted(runs_dir.iterdir(), key=lambda p: p.name, reverse=True):
+        if not run_path.is_dir():
+            continue
+        meta_file = run_path / "run_metadata.json"
+        if meta_file.exists():
+            try:
+                data = json.loads(meta_file.read_text(encoding="utf-8"))
+            except Exception:
+                data = {"run_id": run_path.name}
+        else:
+            data = {"run_id": run_path.name}
+        data["output_dir"] = str(run_path)
+        data["is_latest"] = bool(latest_resolved and run_path.resolve() == latest_resolved)
+        entries.append(data)
+    return entries
+
+
 class SMSTrainingPipeline:
     """Production training pipeline for Qwen SLM fine-tuning."""
 
@@ -39,9 +106,17 @@ class SMSTrainingPipeline:
         lora_dropout: float = 0.05,
         use_4bit: bool = False,
         use_8bit: bool = False,
+        versioned: bool = True,
+        run_name: str | None = None,
+        description: str | None = None,
     ):
         self.model_id = model_id
-        self.output_dir = Path(output_dir)
+        self.base_output_dir = Path(output_dir)
+        self.versioned = versioned
+        self.description = description
+        self.latest_path = self.base_output_dir / "latest"
+
+        self.run_id, self.output_dir = self._allocate_run_dir(run_name)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.lora_config = get_lora_config(
@@ -54,6 +129,90 @@ class SMSTrainingPipeline:
 
         self.tokenizer: PreTrainedTokenizer | None = None
         self.model: PeftModel | None = None
+
+    def _allocate_run_dir(self, run_name: str | None = None) -> tuple[str, Path]:
+        """Determine the output directory for this training run.
+
+        When ``versioned=True``, creates an immutable directory under
+        ``<base_output_dir>/runs/<timestamp_or_run_name>/`` (with collision-safe
+        suffixing) so previous runs are never overwritten.
+        """
+        if not self.versioned:
+            run_id = run_name or "default"
+            return run_id, self.base_output_dir
+
+        base_id = run_name or datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        runs_root = self.base_output_dir / "runs"
+        candidate = runs_root / base_id
+        run_id = base_id
+        suffix = 1
+        while candidate.exists():
+            run_id = f"{base_id}_{suffix}"
+            candidate = runs_root / run_id
+            suffix += 1
+        return run_id, candidate
+
+    def _update_latest_symlink(self) -> None:
+        """Atomically update ``<base_output_dir>/latest`` -> ``runs/<run_id>``."""
+        if not self.versioned:
+            return
+
+        relative_target = Path("runs") / self.run_id
+        tmp_link = self.base_output_dir / f".latest.tmp.{os.getpid()}"
+        if tmp_link.exists() or tmp_link.is_symlink():
+            tmp_link.unlink()
+
+        try:
+            tmp_link.symlink_to(relative_target)
+            os.replace(tmp_link, self.latest_path)
+        except OSError:
+            # Fallback if atomic symlink replacement isn't supported
+            if tmp_link.exists() or tmp_link.is_symlink():
+                tmp_link.unlink()
+            if self.latest_path.exists() or self.latest_path.is_symlink():
+                self.latest_path.unlink()
+            self.latest_path.symlink_to(relative_target)
+
+        logger.info(
+            "Updated latest adapter symlink",
+            extra={"latest_path": str(self.latest_path), "target": str(relative_target)},
+        )
+
+    def _write_run_metadata(
+        self,
+        metrics: dict[str, Any],
+        *,
+        description: str | None = None,
+        dataset_info: dict[str, int] | None = None,
+        training_params: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist rich reproducibility & change metadata alongside the saved adapter."""
+        target_modules = getattr(self.lora_config, "target_modules", None)
+        if isinstance(target_modules, set):
+            target_modules = sorted(target_modules)
+
+        metadata = {
+            "run_id": self.run_id,
+            "description": description if description is not None else self.description,
+            "model_id": self.model_id,
+            "created_at_utc": datetime.now(UTC).isoformat(),
+            "output_dir": str(self.output_dir),
+            "versioned": self.versioned,
+            "git": _collect_git_context(),
+            "dataset": dataset_info or {},
+            "lora": {
+                "r": self.lora_config.r,
+                "lora_alpha": self.lora_config.lora_alpha,
+                "lora_dropout": self.lora_config.lora_dropout,
+                "target_modules": list(target_modules) if target_modules else [],
+                "use_4bit": self.use_4bit,
+                "use_8bit": self.use_8bit,
+            },
+            "training_params": training_params or {},
+            "metrics": metrics,
+        }
+        meta_file = self.output_dir / "run_metadata.json"
+        meta_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     def initialize_model_and_tokenizer(self) -> None:
         """Load tokenizer, base model, and apply LoRA."""
@@ -91,6 +250,7 @@ class SMSTrainingPipeline:
         save_total_limit: int = 2,
         gradient_checkpointing: bool | None = None,
         load_best_model_at_end: bool = False,
+        description: str | None = None,
     ) -> dict[str, Any]:
         """Execute SFT training loop on the dataset.
 
@@ -112,9 +272,14 @@ class SMSTrainingPipeline:
         Returns:
             Dict containing final train and evaluation metrics.
         """
+        run_description = description if description is not None else self.description
         tracer = get_tracer(__name__)
         with tracer.start_as_current_span("slm.training.run") as run_span:
             run_span.set_attribute("slm.model.id", self.model_id)
+            run_span.set_attribute("slm.training.run_id", self.run_id)
+            run_span.set_attribute("slm.training.output_dir", str(self.output_dir))
+            if run_description:
+                run_span.set_attribute("slm.training.description", run_description)
             run_span.set_attribute("slm.training.epochs", num_train_epochs)
             run_span.set_attribute("slm.training.batch_size", per_device_train_batch_size)
             run_span.set_attribute("slm.training.learning_rate", learning_rate)
@@ -296,5 +461,37 @@ class SMSTrainingPipeline:
                 trainer.log_metrics("eval", eval_metrics)
                 trainer.save_metrics("eval", eval_metrics)
                 metrics.update(eval_metrics)
+
+            # Persist run metadata and atomically promote `latest` pointer only after full success
+            dataset_info: dict[str, int] = {"train_samples": len(train_dataset)}
+            if eval_dataset is not None:
+                dataset_info["eval_samples"] = len(eval_dataset)
+
+            training_params = {
+                "num_train_epochs": num_train_epochs,
+                "per_device_train_batch_size": per_device_train_batch_size,
+                "per_device_eval_batch_size": eval_batch_size,
+                "gradient_accumulation_steps": gradient_accumulation_steps,
+                "learning_rate": learning_rate,
+                "max_length": max_length,
+                "warmup_ratio": warmup_ratio,
+                "gradient_checkpointing": effective_grad_ckpt,
+                "eval_steps": eval_steps if has_eval else None,
+                "device": dev_name,
+            }
+            self._write_run_metadata(
+                metrics,
+                description=run_description,
+                dataset_info=dataset_info,
+                training_params=training_params,
+            )
+            self._update_latest_symlink()
+
+            metrics["run_id"] = self.run_id
+            if run_description:
+                metrics["description"] = run_description
+            metrics["output_dir"] = str(self.output_dir)
+            if self.versioned:
+                metrics["latest_path"] = str(self.latest_path)
 
             return metrics

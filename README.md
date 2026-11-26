@@ -60,7 +60,7 @@ flowchart TD
 ## ✨ Key Features
 
 - **Fast Package Management with `uv`**: Deterministic environment and lockfile (`pyproject.toml` + `uv.lock`) targeting Python `3.12` (`>=3.12, <3.13`).
-- **Qwen Fine-Tuning via PEFT + TRL**: Default `Qwen/Qwen3.5-2B` (plus `Qwen/Qwen2.5-1.5B-Instruct`, `3B`, `0.5B` configs in `config/train_config.yaml`) with 4-bit/8-bit QLoRA on CUDA, `float16` on Apple Silicon MPS, and CPU fallback.
+- **Qwen Fine-Tuning via PEFT + TRL**: Default `Qwen/Qwen3.5-2B` (plus `Qwen/Qwen2.5-1.5B-Instruct`, `3B`, `0.5B` configs in `config/train_config.yaml`) with automatic versioned training runs (`runs/<timestamp>/` + atomic `latest` symlink + `run_metadata.json`), 4-bit/8-bit QLoRA on CUDA, `float16` on Apple Silicon MPS, and CPU fallback.
 - **Domain-Specific Indian SMS Synthesizer (`IndianSMSGenerator`)**:
   - Covers 10 Indian banks (`VM-HDFCBK`, `AD-ICICIB`, `BZ-SBIINB`, `AX-AXISBK`, `VK-KOTAKB`, etc.), 32 merchants/VPAs, 7 UPI apps, OTPs, utility/credit-card bills, and spam/phishing messages.
   - **True Indian Number Formatting**: Formats currency using Indian lakh/crore grouping (`1,45,000.00`, `14,50,000.00`).
@@ -296,9 +296,14 @@ uv run slm-sms train \
 # With 4-bit QLoRA on CUDA
 uv run slm-sms train --model-id "Qwen/Qwen3.5-2B" --4bit
 
-# Or via standalone script
-uv run python scripts/train.py --model_id "Qwen/Qwen3.5-2B" --epochs 3
+# Or via standalone script (writes to output/qwen-sms-lora/runs/<timestamp>/ and updates latest symlink)
+uv run python scripts/train.py --config config/train_config.yaml --description "Added 2500 samples with lakh formatting"
+
+# List all saved versions, descriptions, losses, and git commits
+uv run slm-sms runs   # or: make list-runs
 ```
+
+Each training run creates an immutable directory at `output/qwen-sms-lora/runs/<timestamp>/` (including `run_metadata.json` with your `--description`, git commit/branch, dataset counts, LoRA/training params, and metrics) and updates the relative symlink `output/qwen-sms-lora/latest` upon completion. `SMSExtractorEngine` and `scripts/export_merged_model.py` automatically resolve `./output/qwen-sms-lora` to `latest` (or you can pin a specific `./output/qwen-sms-lora/runs/<timestamp>` directory). Pass `--no-versioned` to write directly to `--output-dir`.
 
 ---
 

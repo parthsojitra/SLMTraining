@@ -16,7 +16,7 @@ from slm_sms.core.config import settings
 from slm_sms.core.logging import get_logger
 from slm_sms.core.telemetry import get_metrics, get_tracer
 from slm_sms.data.schema import SMSEntity
-from slm_sms.models.model_loader import get_device_and_dtype
+from slm_sms.models.model_loader import get_device_and_dtype, resolve_adapter_path
 
 logger = get_logger(__name__)
 
@@ -42,7 +42,7 @@ class SMSExtractorEngine:
         model_revision: str | None = _DEFAULT_REVISION,
     ):
         self.model_id_or_path = model_id_or_path
-        self.adapter_path = adapter_path
+        self.adapter_path = resolve_adapter_path(adapter_path)
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p

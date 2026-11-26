@@ -88,6 +88,20 @@ def train_cli(
     learning_rate: float = typer.Option(2e-4, "--learning-rate", "--lr", help="Learning rate"),
     lora_r: int = typer.Option(16, "--lora-r", help="LoRA rank dimension"),
     use_4bit: bool = typer.Option(False, "--4bit", help="Enable 4-bit QLoRA (requires CUDA)"),
+    versioned: bool = typer.Option(
+        True,
+        "--versioned/--no-versioned",
+        help="Save to runs/<timestamp>/ and update latest symlink",
+    ),
+    run_name: str | None = typer.Option(
+        None, "--run-name", help="Optional custom run directory name under runs/"
+    ),
+    description: str | None = typer.Option(
+        None,
+        "--description",
+        "-D",
+        help="Note describing what changed in this versioned run",
+    ),
 ):
     """Fine-tune Qwen model with PEFT LoRA on Indian SMS extraction."""
     from slm_sms.data.dataset import load_hf_dataset_from_dir
@@ -114,6 +128,9 @@ def train_cli(
         lora_alpha = int(l_cfg.get("lora_alpha", lora_alpha))
         lora_dropout = float(l_cfg.get("lora_dropout", lora_dropout))
         output_dir = Path(t_cfg.get("output_dir", output_dir))
+        versioned = bool(t_cfg.get("versioned", versioned))
+        if description is None:
+            description = t_cfg.get("description")
         epochs = int(t_cfg.get("num_train_epochs", epochs))
         batch_size = int(t_cfg.get("per_device_train_batch_size", batch_size))
         eval_batch_size = t_cfg.get("per_device_eval_batch_size")
@@ -136,6 +153,9 @@ def train_cli(
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         use_4bit=use_4bit,
+        versioned=versioned,
+        run_name=run_name,
+        description=description,
     )
 
     metrics = pipeline.train(
@@ -238,6 +258,50 @@ def serve_cli(
 
     console.print(f"[bold green]Starting SLM SMS Server on http://{host}:{port}[/bold green]")
     uvicorn.run("slm_sms.inference.server:app", host=host, port=port, workers=workers)
+
+
+@app.command("runs")
+def list_runs_cli(
+    output_dir: Path = typer.Option(
+        Path("./output/qwen-sms-lora"), "--output-dir", "-o", help="Model output directory"
+    ),
+):
+    """List versioned training runs, descriptions, metrics, and latest pointer."""
+    from slm_sms.training.trainer import list_training_runs
+
+    runs = list_training_runs(output_dir)
+    if not runs:
+        console.print(f"[yellow]No versioned runs found under {output_dir}/runs/[/yellow]")
+        return
+
+    table = Table(title=f"Versioned Model Runs ({output_dir})")
+    table.add_column("Run ID", style="cyan")
+    table.add_column("Latest", style="green")
+    table.add_column("Created (UTC)", style="dim")
+    table.add_column("Train Loss", style="magenta")
+    table.add_column("Eval Loss", style="magenta")
+    table.add_column("Git", style="blue")
+    table.add_column("Description", style="white")
+
+    for r in runs:
+        m = r.get("metrics", {})
+        git_info = r.get("git") or {}
+        git_str = str(git_info.get("commit") or "-")
+        if git_info.get("dirty"):
+            git_str += "*"
+        train_loss = m.get("train_loss")
+        eval_loss = m.get("eval_loss")
+        table.add_row(
+            str(r.get("run_id", "-")),
+            "*" if r.get("is_latest") else "",
+            str(r.get("created_at_utc", "-"))[:19],
+            f"{train_loss:.4f}" if isinstance(train_loss, (int, float)) else "-",
+            f"{eval_loss:.4f}" if isinstance(eval_loss, (int, float)) else "-",
+            git_str,
+            str(r.get("description") or "-"),
+        )
+
+    console.print(table)
 
 
 def run_generate():

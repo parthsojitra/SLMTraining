@@ -15,11 +15,12 @@ SAMPLES          ?= 2500
 MAX_EVAL_SAMPLES ?= 50
 PORT             ?= 8000
 OTEL_ENDPOINT    ?= http://localhost:4318
+RUN_DESC         ?=
 SMS              ?= [VM-HDFCBK] Rs.1,450.00 debited from A/c **4821 on 23-11-26 to swiggy@axisbank (UPI Ref: 432819284129). Avl Bal: Rs.34,210.50.
 
 .PHONY: help install install-core install-cuda lock check-hw \
-	generate-data generate-data-config train-model train-qlora \
-	evaluate infer export-model notebook \
+	generate-data generate-data-config train-model train-qlora list-runs \
+	evaluate infer export-model notebook-run \
 	serve serve-otel serve-console-otel serve-prod load-test load-test-headless \
 	test test-unit test-integration coverage lint format clean clean-outputs
 
@@ -55,11 +56,14 @@ generate-data: ## Generate synthetic SMS splits (override SAMPLES=5000 DATA_DIR=
 generate-data-config: ## Generate synthetic SMS splits from GEN_CONFIG YAML
 	$(PYTHON) scripts/generate_data.py --config $(GEN_CONFIG)
 
-train-model: ## Fine-tune Qwen with LoRA using config/train_config.yaml defaults
-	$(PYTHON) scripts/train.py --config $(TRAIN_CONFIG) --data_dir $(DATA_DIR)
+train-model: ## Fine-tune Qwen with LoRA (optional RUN_DESC="notes about changes")
+	$(PYTHON) scripts/train.py --config $(TRAIN_CONFIG) --data_dir $(DATA_DIR) $(if $(RUN_DESC),--description "$(RUN_DESC)",)
 
 train-qlora: ## Fine-tune Qwen with 4-bit QLoRA (NVIDIA CUDA GPU required)
-	$(PYTHON) scripts/train.py --config $(TRAIN_CONFIG) --data_dir $(DATA_DIR) --use_4bit
+	$(PYTHON) scripts/train.py --config $(TRAIN_CONFIG) --data_dir $(DATA_DIR) --use_4bit $(if $(RUN_DESC),--description "$(RUN_DESC)",)
+
+list-runs: ## List versioned training runs, descriptions, losses, and latest pointer
+	$(PYTHON) -m slm_sms.cli runs --output-dir $(OUTPUT_DIR)
 
 evaluate: ## Evaluate extraction accuracy on test split (optional ADAPTER_PATH=...)
 	$(PYTHON) scripts/evaluate.py --test_file $(DATA_DIR)/test.jsonl --model_id $(MODEL_ID) --max_samples $(MAX_EVAL_SAMPLES) $(if $(ADAPTER_PATH),--adapter_path $(ADAPTER_PATH),)

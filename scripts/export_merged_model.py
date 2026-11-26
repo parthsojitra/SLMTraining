@@ -8,6 +8,8 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from slm_sms.models.model_loader import resolve_adapter_path
+
 
 def main():
     parser = argparse.ArgumentParser(description="Merge LoRA adapter into base model")
@@ -19,12 +21,13 @@ def main():
     )
     args = parser.parse_args()
 
+    adapter_path = resolve_adapter_path(args.adapter_path) or args.adapter_path
     out_path = Path(args.output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loading tokenizer from {args.adapter_path} or {args.base_model}...")
+    print(f"Loading tokenizer from {adapter_path} or {args.base_model}...")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(args.adapter_path, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path, trust_remote_code=True)
     except Exception:
         tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
 
@@ -41,8 +44,8 @@ def main():
         trust_remote_code=True,
     )
 
-    print(f"Applying LoRA adapter from {args.adapter_path}...")
-    peft_model = PeftModel.from_pretrained(base_model, args.adapter_path)
+    print(f"Applying LoRA adapter from {adapter_path}...")
+    peft_model = PeftModel.from_pretrained(base_model, adapter_path)
 
     print("Merging LoRA weights into base model...")
     merged_model = peft_model.merge_and_unload()

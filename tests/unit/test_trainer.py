@@ -205,4 +205,131 @@ def test_training_pipeline_train_smoke(tmp_path, dummy_tokenizer):
     )
     assert "train_loss" in metrics
     assert "eval_loss" in metrics
-    assert (tmp_path / "lora_smoke").exists()
+    assert metrics["run_id"]
+    run_dir = tmp_path / "lora_smoke" / "runs" / metrics["run_id"]
+    latest_link = tmp_path / "lora_smoke" / "latest"
+    assert run_dir.exists()
+    assert (run_dir / "run_metadata.json").exists()
+    assert latest_link.is_symlink()
+    assert latest_link.resolve() == run_dir.resolve()
+
+
+def test_versioned_runs_preserve_history_and_update_latest(tmp_path, dummy_tokenizer):
+    """Running multiple trainings preserves older runs, avoids collisions, and promotes `latest`."""
+    import json
+
+    from slm_sms.models.model_loader import resolve_adapter_path
+
+    base_out = tmp_path / "versioned_out"
+    ds = DatasetDict(
+        {
+            "train": Dataset.from_list(
+                [
+                    {
+                        "messages": [
+                            {"role": "system", "content": "hi"},
+                            {"role": "user", "content": "hi user"},
+                            {"role": "assistant", "content": "hi assistant hi"},
+                        ]
+                    }
+                ]
+            )
+        }
+    )
+
+    # First run with custom run_name="exp" and change description
+    p1 = SMSTrainingPipeline(
+        model_id="Qwen/Qwen3.5-2B",
+        output_dir=base_out,
+        run_name="exp",
+        description="Initial baseline with 800 samples",
+    )
+    p1.model = DummyModel(DummyConfig())
+    p1.tokenizer = dummy_tokenizer
+    m1 = p1.train(
+        dataset=ds,
+        num_train_epochs=1,
+        per_device_train_batch_size=1,
+        eval_steps=None,
+        logging_steps=1,
+    )
+    (p1.output_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
+
+    # Second run with the same run_name="exp" must auto-suffix to "exp_1" without overwriting "exp"
+    p2 = SMSTrainingPipeline(
+        model_id="Qwen/Qwen3.5-2B",
+        output_dir=base_out,
+        run_name="exp",
+        description="Increased dataset to 2500 samples + lakh formatting",
+    )
+    p2.model = DummyModel(DummyConfig())
+    p2.tokenizer = dummy_tokenizer
+    m2 = p2.train(
+        dataset=ds,
+        num_train_epochs=1,
+        per_device_train_batch_size=1,
+        eval_steps=None,
+        logging_steps=1,
+    )
+    (p2.output_dir / "adapter_config.json").write_text("{}", encoding="utf-8")
+
+    assert m1["run_id"] == "exp"
+    assert m1["description"] == "Initial baseline with 800 samples"
+    assert m2["run_id"] == "exp_1"
+    assert m2["description"] == "Increased dataset to 2500 samples + lakh formatting"
+    assert (base_out / "runs" / "exp" / "run_metadata.json").exists()
+    assert (base_out / "runs" / "exp_1" / "run_metadata.json").exists()
+
+    latest_link = base_out / "latest"
+    assert latest_link.is_symlink()
+    assert latest_link.resolve() == p2.output_dir.resolve()
+    assert resolve_adapter_path(base_out) == str(p2.output_dir.resolve())
+
+    meta2 = json.loads((p2.output_dir / "run_metadata.json").read_text())
+    assert meta2["run_id"] == "exp_1"
+    assert meta2["versioned"] is True
+    assert meta2["description"] == "Increased dataset to 2500 samples + lakh formatting"
+    assert meta2["dataset"]["train_samples"] == 1
+    assert meta2["lora"]["r"] == 16
+    assert meta2["training_params"]["num_train_epochs"] == 1
+
+    from slm_sms.training import list_training_runs
+
+    listed = list_training_runs(base_out)
+    assert [r["run_id"] for r in listed] == ["exp_1", "exp"]
+    assert listed[0]["is_latest"] is True
+    assert listed[1]["is_latest"] is False
+
+
+def test_unversioned_run_writes_directly_to_output_dir(tmp_path, dummy_tokenizer):
+    """versioned=False disables runs/<timestamp>/ and latest symlink creation."""
+    out = tmp_path / "flat_out"
+    ds = DatasetDict(
+        {
+            "train": Dataset.from_list(
+                [
+                    {
+                        "messages": [
+                            {"role": "system", "content": "hi"},
+                            {"role": "user", "content": "hi user"},
+                            {"role": "assistant", "content": "hi assistant hi"},
+                        ]
+                    }
+                ]
+            )
+        }
+    )
+    p = SMSTrainingPipeline(model_id="Qwen/Qwen3.5-2B", output_dir=out, versioned=False)
+    p.model = DummyModel(DummyConfig())
+    p.tokenizer = dummy_tokenizer
+    metrics = p.train(
+        dataset=ds,
+        num_train_epochs=1,
+        per_device_train_batch_size=1,
+        eval_steps=None,
+        logging_steps=1,
+    )
+    assert metrics["output_dir"] == str(out)
+    assert (out / "run_metadata.json").exists()
+    assert not (out / "runs").exists()
+    assert not (out / "latest").exists()
