@@ -25,6 +25,7 @@ from slm_sms.models.model_loader import (
     get_lora_config,
     load_model,
     load_tokenizer,
+    resolve_adapter_path,
     setup_peft_model,
 )
 
@@ -109,12 +110,23 @@ class SMSTrainingPipeline:
         versioned: bool = True,
         run_name: str | None = None,
         description: str | None = None,
+        init_adapter_path: str | Path | None = None,
     ):
         self.model_id = model_id
         self.base_output_dir = Path(output_dir)
         self.versioned = versioned
         self.description = description
         self.latest_path = self.base_output_dir / "latest"
+
+        self.init_adapter_path: str | None = resolve_adapter_path(init_adapter_path)
+        if (
+            self.init_adapter_path is not None
+            and not (Path(self.init_adapter_path) / "adapter_config.json").exists()
+        ):
+            raise FileNotFoundError(
+                f"Initial adapter checkpoint not found (missing adapter_config.json): "
+                f"{self.init_adapter_path}"
+            )
 
         self.run_id, self.output_dir = self._allocate_run_dir(run_name)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -178,6 +190,54 @@ class SMSTrainingPipeline:
             extra={"latest_path": str(self.latest_path), "target": str(relative_target)},
         )
 
+    def _resolve_resume_checkpoint(
+        self, resume_from_checkpoint: str | Path | bool | None
+    ) -> str | None:
+        """Resolve and validate a checkpoint path for exact Trainer state resumption."""
+        if resume_from_checkpoint is None or resume_from_checkpoint is False:
+            return None
+
+        def _latest_checkpoint_in(directory: Path) -> Path | None:
+            if not directory.exists():
+                return None
+            candidates = [
+                p
+                for p in directory.iterdir()
+                if p.is_dir()
+                and p.name.startswith("checkpoint-")
+                and p.name.split("-")[-1].isdigit()
+            ]
+            if not candidates:
+                return None
+            return max(candidates, key=lambda p: int(p.name.split("-")[-1]))
+
+        if resume_from_checkpoint is True:
+            search_dirs = [self.output_dir]
+            if self.latest_path.exists():
+                search_dirs.append(self.latest_path.resolve())
+            search_dirs.append(self.base_output_dir)
+            for candidate_dir in search_dirs:
+                found = _latest_checkpoint_in(candidate_dir)
+                if found is not None:
+                    return str(found.resolve())
+            raise FileNotFoundError(
+                f"No checkpoint-* directory found under {self.output_dir} or {self.base_output_dir}"
+            )
+
+        raw = Path(resume_from_checkpoint)
+        resolved = Path(resolve_adapter_path(raw) or raw)
+        nested = _latest_checkpoint_in(resolved)
+        if nested is not None:
+            return str(nested.resolve())
+        if (resolved / "trainer_state.json").exists():
+            return str(resolved.resolve())
+        if (raw / "trainer_state.json").exists():
+            return str(raw.resolve())
+
+        raise FileNotFoundError(
+            f"Checkpoint not found (missing trainer_state.json or checkpoint-*): {resume_from_checkpoint}"
+        )
+
     def _write_run_metadata(
         self,
         metrics: dict[str, Any],
@@ -185,6 +245,7 @@ class SMSTrainingPipeline:
         description: str | None = None,
         dataset_info: dict[str, int] | None = None,
         training_params: dict[str, Any] | None = None,
+        lineage: dict[str, Any] | None = None,
     ) -> None:
         """Persist rich reproducibility & change metadata alongside the saved adapter."""
         target_modules = getattr(self.lora_config, "target_modules", None)
@@ -198,6 +259,7 @@ class SMSTrainingPipeline:
             "created_at_utc": datetime.now(UTC).isoformat(),
             "output_dir": str(self.output_dir),
             "versioned": self.versioned,
+            "lineage": lineage or {},
             "git": _collect_git_context(),
             "dataset": dataset_info or {},
             "lora": {
@@ -214,16 +276,25 @@ class SMSTrainingPipeline:
         meta_file = self.output_dir / "run_metadata.json"
         meta_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
-    def initialize_model_and_tokenizer(self) -> None:
-        """Load tokenizer, base model, and apply LoRA."""
+    def initialize_model_and_tokenizer(self, adapter_path: str | Path | None = None) -> None:
+        """Load tokenizer, base model, and apply fresh or checkpoint LoRA weights."""
+        effective_adapter = resolve_adapter_path(adapter_path) or self.init_adapter_path
         tracer = get_tracer(__name__)
         with tracer.start_as_current_span("slm.training.init_model") as span:
             span.set_attribute("slm.model.id", self.model_id)
             span.set_attribute("slm.quantized.4bit", self.use_4bit)
             span.set_attribute("slm.quantized.8bit", self.use_8bit)
+            if effective_adapter:
+                span.set_attribute("slm.training.init_adapter", effective_adapter)
 
-            logger.info("Initializing training model", extra={"model_id": self.model_id})
-            self.tokenizer = load_tokenizer(self.model_id)
+            logger.info(
+                "Initializing training model",
+                extra={"model_id": self.model_id, "init_adapter": effective_adapter},
+            )
+            tok_source = self.model_id
+            if effective_adapter and (Path(effective_adapter) / "tokenizer_config.json").exists():
+                tok_source = effective_adapter
+            self.tokenizer = load_tokenizer(tok_source)
             base_model = load_model(
                 model_id=self.model_id,
                 use_4bit=self.use_4bit,
@@ -233,6 +304,7 @@ class SMSTrainingPipeline:
                 base_model,
                 lora_config=self.lora_config,
                 is_quantized=self.use_4bit or self.use_8bit,
+                adapter_path=effective_adapter,
             )
 
     def train(
@@ -251,6 +323,7 @@ class SMSTrainingPipeline:
         gradient_checkpointing: bool | None = None,
         load_best_model_at_end: bool = False,
         description: str | None = None,
+        resume_from_checkpoint: str | Path | bool | None = None,
     ) -> dict[str, Any]:
         """Execute SFT training loop on the dataset.
 
@@ -273,6 +346,7 @@ class SMSTrainingPipeline:
             Dict containing final train and evaluation metrics.
         """
         run_description = description if description is not None else self.description
+        resolved_resume = self._resolve_resume_checkpoint(resume_from_checkpoint)
         tracer = get_tracer(__name__)
         with tracer.start_as_current_span("slm.training.run") as run_span:
             run_span.set_attribute("slm.model.id", self.model_id)
@@ -280,6 +354,10 @@ class SMSTrainingPipeline:
             run_span.set_attribute("slm.training.output_dir", str(self.output_dir))
             if run_description:
                 run_span.set_attribute("slm.training.description", run_description)
+            if self.init_adapter_path:
+                run_span.set_attribute("slm.training.init_adapter", self.init_adapter_path)
+            if resolved_resume:
+                run_span.set_attribute("slm.training.resumed_from", resolved_resume)
             run_span.set_attribute("slm.training.epochs", num_train_epochs)
             run_span.set_attribute("slm.training.batch_size", per_device_train_batch_size)
             run_span.set_attribute("slm.training.learning_rate", learning_rate)
@@ -292,7 +370,16 @@ class SMSTrainingPipeline:
                 torch.cuda.empty_cache()
 
             if self.model is None or self.tokenizer is None:
-                self.initialize_model_and_tokenizer()
+                fallback_adapter = (
+                    resolved_resume
+                    if (
+                        self.init_adapter_path is None
+                        and resolved_resume
+                        and (Path(resolved_resume) / "adapter_config.json").exists()
+                    )
+                    else None
+                )
+                self.initialize_model_and_tokenizer(adapter_path=fallback_adapter)
 
             # Resolve train and evaluation datasets
             if isinstance(dataset, (DatasetDict, dict)):
@@ -433,9 +520,15 @@ class SMSTrainingPipeline:
 
             trainer = SFTTrainer(**trainer_kwargs)
 
-            logger.info("Starting fine-tuning")
+            logger.info(
+                "Starting fine-tuning",
+                extra={
+                    "resume_from_checkpoint": resolved_resume,
+                    "init_adapter": self.init_adapter_path,
+                },
+            )
             with tracer.start_as_current_span("slm.training.sft") as sft_span:
-                train_result = trainer.train()
+                train_result = trainer.train(resume_from_checkpoint=resolved_resume)
                 for k, v in train_result.metrics.items():
                     if isinstance(v, (int, float)):
                         sft_span.set_attribute(f"slm.train.{k}", v)
@@ -479,17 +572,26 @@ class SMSTrainingPipeline:
                 "eval_steps": eval_steps if has_eval else None,
                 "device": dev_name,
             }
+            lineage = {
+                "init_adapter_path": self.init_adapter_path,
+                "resume_from_checkpoint": resolved_resume,
+            }
             self._write_run_metadata(
                 metrics,
                 description=run_description,
                 dataset_info=dataset_info,
                 training_params=training_params,
+                lineage=lineage,
             )
             self._update_latest_symlink()
 
             metrics["run_id"] = self.run_id
             if run_description:
                 metrics["description"] = run_description
+            if self.init_adapter_path:
+                metrics["init_adapter_path"] = self.init_adapter_path
+            if resolved_resume:
+                metrics["resume_from_checkpoint"] = resolved_resume
             metrics["output_dir"] = str(self.output_dir)
             if self.versioned:
                 metrics["latest_path"] = str(self.latest_path)

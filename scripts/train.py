@@ -37,6 +37,18 @@ def main():
         help="Note describing what changed in this versioned run",
     )
     parser.add_argument(
+        "--init_adapter",
+        type=str,
+        default=None,
+        help="Existing LoRA adapter path to continue training from (fresh optimizer, new version)",
+    )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Trainer checkpoint directory (e.g. checkpoint-125) to resume exact state",
+    )
+    parser.add_argument(
         "--no_versioned",
         action="store_true",
         help="Write directly to output_dir without runs/<timestamp> versioning",
@@ -51,6 +63,8 @@ def main():
     gradient_checkpointing = None
     versioned = not args.no_versioned
     description = args.description
+    init_adapter_path = args.init_adapter
+    resume_from_checkpoint = args.resume_from_checkpoint
 
     if args.config:
         raw_cfg = load_yaml_config(args.config)
@@ -66,6 +80,10 @@ def main():
             versioned = bool(t_cfg.get("versioned", versioned))
         if description is None:
             description = t_cfg.get("description")
+        if init_adapter_path is None:
+            init_adapter_path = t_cfg.get("init_adapter_path")
+        if resume_from_checkpoint is None:
+            resume_from_checkpoint = t_cfg.get("resume_from_checkpoint")
         args.epochs = int(t_cfg.get("num_train_epochs", args.epochs))
         args.batch_size = int(t_cfg.get("per_device_train_batch_size", args.batch_size))
         eval_batch_size = t_cfg.get("per_device_eval_batch_size")
@@ -91,6 +109,7 @@ def main():
         versioned=versioned,
         run_name=args.run_name,
         description=description,
+        init_adapter_path=init_adapter_path,
     )
 
     print("Beginning training...")
@@ -107,6 +126,7 @@ def main():
         eval_steps=eval_steps,
         save_total_limit=save_total_limit,
         gradient_checkpointing=gradient_checkpointing,
+        resume_from_checkpoint=resume_from_checkpoint,
     )
     print(f"Training finished successfully! Metrics: {metrics}")
 

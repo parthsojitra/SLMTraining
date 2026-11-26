@@ -102,6 +102,18 @@ def train_cli(
         "-D",
         help="Note describing what changed in this versioned run",
     ),
+    init_adapter: Path | None = typer.Option(
+        None,
+        "--init-adapter",
+        "-a",
+        help="Existing LoRA adapter path to continue training from (fresh optimizer, new version)",
+    ),
+    resume_from_checkpoint: str | None = typer.Option(
+        None,
+        "--resume-from-checkpoint",
+        "-r",
+        help="Trainer checkpoint dir (e.g. checkpoint-125) to resume exact optimizer/step state",
+    ),
 ):
     """Fine-tune Qwen model with PEFT LoRA on Indian SMS extraction."""
     from slm_sms.data.dataset import load_hf_dataset_from_dir
@@ -116,6 +128,8 @@ def train_cli(
     save_total_limit = 2
     eval_batch_size: int | None = None
     gradient_checkpointing: bool | None = None
+    init_adapter_path: str | Path | None = init_adapter
+    resume_ckpt: str | bool | None = resume_from_checkpoint
 
     if config is not None:
         raw_cfg = load_yaml_config(config)
@@ -131,6 +145,10 @@ def train_cli(
         versioned = bool(t_cfg.get("versioned", versioned))
         if description is None:
             description = t_cfg.get("description")
+        if init_adapter_path is None:
+            init_adapter_path = t_cfg.get("init_adapter_path")
+        if resume_ckpt is None:
+            resume_ckpt = t_cfg.get("resume_from_checkpoint")
         epochs = int(t_cfg.get("num_train_epochs", epochs))
         batch_size = int(t_cfg.get("per_device_train_batch_size", batch_size))
         eval_batch_size = t_cfg.get("per_device_eval_batch_size")
@@ -156,6 +174,7 @@ def train_cli(
         versioned=versioned,
         run_name=run_name,
         description=description,
+        init_adapter_path=init_adapter_path,
     )
 
     metrics = pipeline.train(
@@ -171,6 +190,7 @@ def train_cli(
         eval_steps=eval_steps,
         save_total_limit=save_total_limit,
         gradient_checkpointing=gradient_checkpointing,
+        resume_from_checkpoint=resume_ckpt,
     )
     console.print(f"[bold green]Training complete! Metrics: {metrics}[/bold green]")
 

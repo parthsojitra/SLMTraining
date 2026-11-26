@@ -24,11 +24,12 @@ class DummyBackbone(nn.Module):
     def __init__(self, vocab_size: int = 200, hidden_size: int = 16):
         super().__init__()
         self.embed = nn.Embedding(vocab_size, hidden_size)
+        self.proj = nn.Linear(hidden_size, hidden_size)
 
     def forward(self, input_ids=None, **kwargs):
         from transformers.modeling_outputs import BaseModelOutputWithPast
 
-        return BaseModelOutputWithPast(last_hidden_state=self.embed(input_ids))
+        return BaseModelOutputWithPast(last_hidden_state=self.proj(self.embed(input_ids)))
 
 
 class DummyModel(PreTrainedModel):
@@ -43,6 +44,9 @@ class DummyModel(PreTrainedModel):
 
     def get_output_embeddings(self):
         return self.lm_head
+
+    def prepare_inputs_for_generation(self, input_ids, **kwargs):
+        return {"input_ids": input_ids}
 
     def forward(self, input_ids=None, labels=None, **kwargs):
         from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -333,3 +337,156 @@ def test_unversioned_run_writes_directly_to_output_dir(tmp_path, dummy_tokenizer
     assert (out / "run_metadata.json").exists()
     assert not (out / "runs").exists()
     assert not (out / "latest").exists()
+
+
+def test_warm_start_from_existing_peft_adapter(tmp_path, dummy_tokenizer):
+    """Verify setup_peft_model + SMSTrainingPipeline warm-start from a saved LoRA adapter."""
+    import json
+
+    from slm_sms.models.model_loader import get_lora_config, setup_peft_model
+
+    # Build a real PEFT LoRA adapter on DummyModel (targeting DummyBackbone's `proj` Linear layer)
+    base_model_v1 = DummyModel(DummyConfig())
+    lora_cfg = get_lora_config(r=4, lora_alpha=8, lora_dropout=0.0, target_modules=["proj"])
+    peft_v1 = setup_peft_model(base_model_v1, lora_config=lora_cfg)
+
+    ds = DatasetDict(
+        {
+            "train": Dataset.from_list(
+                [
+                    {
+                        "messages": [
+                            {"role": "system", "content": "hi"},
+                            {"role": "user", "content": "hi user"},
+                            {"role": "assistant", "content": "hi assistant hi"},
+                        ]
+                    }
+                ]
+            )
+        }
+    )
+
+    out_root = tmp_path / "lora_versions"
+    p1 = SMSTrainingPipeline(
+        model_id="Qwen/Qwen3.5-2B",
+        output_dir=out_root,
+        run_name="v1",
+        description="Initial v1 LoRA",
+    )
+    p1.model = peft_v1
+    p1.tokenizer = dummy_tokenizer
+    p1.train(
+        dataset=ds,
+        num_train_epochs=1,
+        per_device_train_batch_size=1,
+        eval_steps=None,
+        logging_steps=1,
+    )
+    assert (p1.output_dir / "adapter_config.json").exists()
+
+    # Warm-start v2 using base_out ("latest") via setup_peft_model(..., adapter_path=...)
+    p2 = SMSTrainingPipeline(
+        model_id="Qwen/Qwen3.5-2B",
+        output_dir=out_root,
+        run_name="v2",
+        description="Warm-started from v1",
+        init_adapter_path=out_root,  # resolves through `latest` -> runs/v1
+    )
+    assert p2.init_adapter_path == str(p1.output_dir.resolve())
+
+    base_model_v2 = DummyModel(DummyConfig())
+    p2.model = setup_peft_model(base_model_v2, adapter_path=p2.init_adapter_path)
+    p2.tokenizer = dummy_tokenizer
+
+    # Ensure loaded LoRA weights are actually trainable (is_trainable=True)
+    trainable_params, _ = p2.model.get_nb_trainable_parameters()
+    assert trainable_params > 0
+
+    m2 = p2.train(
+        dataset=ds,
+        num_train_epochs=1,
+        per_device_train_batch_size=1,
+        eval_steps=None,
+        logging_steps=1,
+    )
+    assert m2["init_adapter_path"] == str(p1.output_dir.resolve())
+
+    meta2 = json.loads((p2.output_dir / "run_metadata.json").read_text())
+    assert meta2["lineage"]["init_adapter_path"] == str(p1.output_dir.resolve())
+    assert (out_root / "latest").resolve() == p2.output_dir.resolve()
+
+
+def test_resume_from_checkpoint_restores_step_and_records_lineage(tmp_path, dummy_tokenizer):
+    """Verify resume_from_checkpoint continues from a saved checkpoint-* and records lineage."""
+    import json
+
+    ds = DatasetDict(
+        {
+            "train": Dataset.from_list(
+                [
+                    {
+                        "messages": [
+                            {"role": "system", "content": "hi"},
+                            {"role": "user", "content": "hi user"},
+                            {"role": "assistant", "content": "hi assistant hi"},
+                        ]
+                    },
+                    {
+                        "messages": [
+                            {"role": "system", "content": "hi"},
+                            {"role": "user", "content": "hi user"},
+                            {"role": "assistant", "content": "hi assistant hi"},
+                        ]
+                    },
+                ]
+            )
+        }
+    )
+
+    out_root = tmp_path / "resume_versions"
+    p1 = SMSTrainingPipeline(model_id="Qwen/Qwen3.5-2B", output_dir=out_root, run_name="r1")
+    p1.model = DummyModel(DummyConfig())
+    p1.tokenizer = dummy_tokenizer
+    p1.train(
+        dataset=ds,
+        num_train_epochs=1,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=1,
+        eval_steps=None,
+        logging_steps=1,
+    )
+    ckpts = list(p1.output_dir.glob("checkpoint-*"))
+    assert len(ckpts) == 1
+
+    # Resume from r1's checkpoint for epoch 2 into a new versioned run r2
+    p2 = SMSTrainingPipeline(
+        model_id="Qwen/Qwen3.5-2B",
+        output_dir=out_root,
+        run_name="r2",
+        description="Resumed from r1 for epoch 2",
+    )
+    p2.model = DummyModel(DummyConfig())
+    p2.tokenizer = dummy_tokenizer
+    m2 = p2.train(
+        dataset=ds,
+        num_train_epochs=2,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=1,
+        eval_steps=None,
+        logging_steps=1,
+        resume_from_checkpoint=p1.output_dir,  # passes run dir -> auto-picks checkpoint-*
+    )
+    assert m2["resume_from_checkpoint"] == str(ckpts[0].resolve())
+    meta2 = json.loads((p2.output_dir / "run_metadata.json").read_text())
+    assert meta2["lineage"]["resume_from_checkpoint"] == str(ckpts[0].resolve())
+
+
+def test_missing_init_or_resume_checkpoint_raises(tmp_path):
+    """Fail fast with FileNotFoundError if adapter or checkpoint does not exist."""
+    missing = tmp_path / "nonexistent"
+    with pytest.raises(FileNotFoundError, match="Initial adapter checkpoint not found"):
+        SMSTrainingPipeline(output_dir=tmp_path / "out", init_adapter_path=missing)
+
+    p = SMSTrainingPipeline(output_dir=tmp_path / "out2")
+    with pytest.raises(FileNotFoundError, match="Checkpoint not found"):
+        p._resolve_resume_checkpoint(missing)

@@ -38,3 +38,7 @@ training:
   output_dir: "./output/qwen-sms-lora"
   versioned: true
   description: "Baseline Qwen3.5-2B LoRA run on Indian SMS corpus"
+  # Warm-start new version from an existing LoRA adapter (e.g. "./output/qwen-sms-lora/latest")
+  init_adapter_path: null
+  # Exact mid-run resume from a trainer checkpoint dir (e.g. "./output/qwen-sms-lora/checkpoint-125")
+  resume_from_checkpoint: null

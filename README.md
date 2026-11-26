@@ -301,6 +301,16 @@ uv run python scripts/train.py --config config/train_config.yaml --description "
 
 # List all saved versions, descriptions, losses, and git commits
 uv run slm-sms runs   # or: make list-runs
+
+# Warm-start a new versioned run from a previously trained LoRA adapter (fresh optimizer)
+uv run slm-sms train --config config/train_config.yaml \
+  --init-adapter ./output/qwen-sms-lora/latest \
+  --description "Continue fine-tuning on expanded corpus"
+
+# Or resume exact mid-run optimizer + scheduler + step state from a checkpoint-* directory
+uv run slm-sms train --config config/train_config.yaml \
+  --resume-from-checkpoint ./output/qwen-sms-lora/runs/<timestamp>/checkpoint-100 \
+  --epochs 2
 ```
 
 Each training run creates an immutable directory at `output/qwen-sms-lora/runs/<timestamp>/` (including `run_metadata.json` with your `--description`, git commit/branch, dataset counts, LoRA/training params, and metrics) and updates the relative symlink `output/qwen-sms-lora/latest` upon completion. `SMSExtractorEngine` and `scripts/export_merged_model.py` automatically resolve `./output/qwen-sms-lora` to `latest` (or you can pin a specific `./output/qwen-sms-lora/runs/<timestamp>` directory). Pass `--no-versioned` to write directly to `--output-dir`.
